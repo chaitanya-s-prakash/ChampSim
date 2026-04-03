@@ -130,6 +130,10 @@ std::vector<std::string> champsim::plain_printer::format(CACHE::stats_type stats
 std::vector<std::string> champsim::plain_printer::format(DRAM_CHANNEL::stats_type stats)
 {
   std::vector<std::string> lines{};
+  lines.push_back(fmt::format("{} READ_REQUESTS: {:10}", stats.name, stats.read_requests));
+  lines.push_back(fmt::format("  WRITE_REQUESTS: {:10}", stats.write_requests));
+  lines.push_back(fmt::format("  BYTES_RETURNED: {:10}", stats.bytes_returned));
+  lines.push_back(fmt::format("  BYTES_TRANSFERRED: {:10}", stats.bytes_transferred));
   lines.push_back(fmt::format("{} RQ ROW_BUFFER_HIT: {:10}", stats.name, stats.RQ_ROW_BUFFER_HIT));
   lines.push_back(fmt::format("  ROW_BUFFER_MISS: {:10}", stats.RQ_ROW_BUFFER_MISS));
   lines.push_back(fmt::format("  AVG DBUS CONGESTED CYCLE: {}", ::print_ratio(stats.dbus_cycle_congested, stats.dbus_count_congested)));

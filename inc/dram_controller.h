@@ -26,6 +26,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "address.h"
 #include "channel.h"
@@ -93,7 +94,9 @@ struct DRAM_ADDRESS_MAPPING {
 struct DRAM_CHANNEL final : public champsim::operable {
   using response_type = typename champsim::channel::response_type;
 
+  const std::string channel_name;
   const DRAM_ADDRESS_MAPPING address_mapping;
+  const champsim::address address_offset;
 
   struct request_type {
     bool scheduled = false;
@@ -124,7 +127,7 @@ struct DRAM_CHANNEL final : public champsim::operable {
    */
 
   struct BANK_REQUEST {
-    bool valid = false, row_buffer_hit = false, need_refresh = false, under_refresh = false;
+    bool valid = false, row_buffer_hit = false, need_refresh = false, under_refresh = false, is_write = false;
 
     std::optional<std::size_t> open_row{};
 
@@ -164,7 +167,8 @@ struct DRAM_CHANNEL final : public champsim::operable {
 
   DRAM_CHANNEL(champsim::chrono::picoseconds dbus_period, champsim::chrono::picoseconds mc_period, std::size_t t_rp, std::size_t t_rcd, std::size_t t_cas,
                std::size_t t_ras, champsim::chrono::microseconds refresh_period, std::size_t refreshes_per_period, champsim::data::bytes width,
-               std::size_t rq_size, std::size_t wq_size, DRAM_ADDRESS_MAPPING addr_mapping);
+               std::size_t rq_size, std::size_t wq_size, DRAM_ADDRESS_MAPPING addr_mapping, std::string name = "Channel",
+               champsim::address address_offset_ = champsim::address{});
 
   void check_write_collision();
   void check_read_collision();
@@ -181,6 +185,7 @@ struct DRAM_CHANNEL final : public champsim::operable {
   void end_phase(unsigned cpu) final;
   void print_deadlock() final;
 
+  [[nodiscard]] champsim::address local_address(champsim::address addr) const;
   std::size_t bank_request_capacity() const;
   std::size_t bankgroup_request_capacity() const;
   [[nodiscard]] champsim::data::bytes density() const;
@@ -188,24 +193,62 @@ struct DRAM_CHANNEL final : public champsim::operable {
 
 class MEMORY_CONTROLLER : public champsim::operable
 {
+public:
+  struct memory_spec {
+    std::string name = "DRAM";
+    champsim::chrono::picoseconds dbus_period{};
+    champsim::chrono::picoseconds mc_period{};
+    std::size_t t_rp = 0;
+    std::size_t t_rcd = 0;
+    std::size_t t_cas = 0;
+    std::size_t t_ras = 0;
+    champsim::chrono::microseconds refresh_period{};
+    std::size_t rq_size = 0;
+    std::size_t wq_size = 0;
+    std::size_t channels = 0;
+    champsim::data::bytes channel_width{};
+    std::size_t rows = 0;
+    std::size_t columns = 0;
+    std::size_t ranks = 0;
+    std::size_t bankgroups = 0;
+    std::size_t banks = 0;
+    std::size_t refreshes_per_period = 0;
+  };
+
+private:
   using channel_type = champsim::channel;
   using request_type = typename channel_type::request_type;
   using response_type = typename channel_type::response_type;
   std::vector<channel_type*> queues;
-  const champsim::data::bytes channel_width;
+  const champsim::data::bytes primary_channel_width;
+  const std::optional<champsim::data::bytes> secondary_channel_width;
+  const std::size_t primary_channel_count;
+  const std::string primary_name;
+  const std::optional<std::string> secondary_name;
+  const champsim::data::bytes primary_size_bytes;
+  const champsim::data::bytes secondary_size_bytes;
 
   void initiate_requests();
   bool add_rq(const request_type& packet, champsim::channel* ul);
   bool add_wq(const request_type& packet);
 
   const DRAM_ADDRESS_MAPPING address_mapping;
+  const std::optional<DRAM_ADDRESS_MAPPING> secondary_address_mapping;
 
   // data bus period
   champsim::chrono::picoseconds data_bus_period{};
 
+  static DRAM_ADDRESS_MAPPING make_address_mapping(const memory_spec& spec);
+  static champsim::data::bytes memory_size(const DRAM_ADDRESS_MAPPING& mapping);
+  [[nodiscard]] bool has_secondary_tier() const;
+  [[nodiscard]] bool is_secondary_address(champsim::address address) const;
+  [[nodiscard]] champsim::address normalize_secondary_address(champsim::address address) const;
+  [[nodiscard]] std::size_t channel_index(champsim::address address) const;
+
 public:
   std::vector<DRAM_CHANNEL> channels;
 
+  MEMORY_CONTROLLER(std::vector<channel_type*>&& ul, memory_spec primary, std::optional<memory_spec> secondary = {});
   MEMORY_CONTROLLER(champsim::chrono::picoseconds dbus_period, champsim::chrono::picoseconds mc_period, std::size_t t_rp, std::size_t t_rcd, std::size_t t_cas,
                     std::size_t t_ras, champsim::chrono::microseconds refresh_period, std::vector<channel_type*>&& ul, std::size_t rq_size, std::size_t wq_size,
                     std::size_t chans, champsim::data::bytes chan_width, std::size_t rows, std::size_t columns, std::size_t ranks, std::size_t bankgroups,
@@ -218,6 +261,9 @@ public:
   void print_deadlock() final;
 
   [[nodiscard]] champsim::data::bytes size() const;
+  [[nodiscard]] champsim::data::bytes primary_size() const;
+  [[nodiscard]] champsim::data::bytes secondary_size() const;
+  [[nodiscard]] bool is_tiered() const;
 };
 
 #endif

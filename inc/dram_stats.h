@@ -9,6 +9,10 @@ struct dram_stats {
   long dbus_cycle_congested{};
   uint64_t dbus_count_congested = 0;
   uint64_t refresh_cycles = 0;
+  uint64_t read_requests = 0;
+  uint64_t write_requests = 0;
+  uint64_t bytes_returned = 0;
+  uint64_t bytes_transferred = 0;
   unsigned WQ_ROW_BUFFER_HIT = 0, WQ_ROW_BUFFER_MISS = 0, RQ_ROW_BUFFER_HIT = 0, RQ_ROW_BUFFER_MISS = 0, WQ_FULL = 0;
 };
 

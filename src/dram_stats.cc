@@ -4,6 +4,10 @@ dram_stats operator-(dram_stats lhs, dram_stats rhs)
 {
   lhs.dbus_cycle_congested -= rhs.dbus_cycle_congested;
   lhs.dbus_count_congested -= rhs.dbus_count_congested;
+  lhs.read_requests -= rhs.read_requests;
+  lhs.write_requests -= rhs.write_requests;
+  lhs.bytes_returned -= rhs.bytes_returned;
+  lhs.bytes_transferred -= rhs.bytes_transferred;
   lhs.WQ_ROW_BUFFER_HIT -= rhs.WQ_ROW_BUFFER_HIT;
   lhs.WQ_ROW_BUFFER_MISS -= rhs.WQ_ROW_BUFFER_MISS;
   lhs.RQ_ROW_BUFFER_HIT -= rhs.RQ_ROW_BUFFER_HIT;

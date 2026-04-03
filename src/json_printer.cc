@@ -76,7 +76,11 @@ void to_json(nlohmann::json& j, const CACHE::stats_type& stats)
 
 void to_json(nlohmann::json& j, const DRAM_CHANNEL::stats_type stats)
 {
-  j = nlohmann::json{{"RQ ROW_BUFFER_HIT", stats.RQ_ROW_BUFFER_HIT},
+  j = nlohmann::json{{"READ_REQUESTS", stats.read_requests},
+                     {"WRITE_REQUESTS", stats.write_requests},
+                     {"BYTES_RETURNED", stats.bytes_returned},
+                     {"BYTES_TRANSFERRED", stats.bytes_transferred},
+                     {"RQ ROW_BUFFER_HIT", stats.RQ_ROW_BUFFER_HIT},
                      {"RQ ROW_BUFFER_MISS", stats.RQ_ROW_BUFFER_MISS},
                      {"WQ ROW_BUFFER_HIT", stats.WQ_ROW_BUFFER_HIT},
                      {"WQ ROW_BUFFER_MISS", stats.WQ_ROW_BUFFER_MISS},
