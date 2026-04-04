@@ -105,11 +105,13 @@ struct DRAM_CHANNEL final : public champsim::operable {
     uint8_t asid[2] = {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()};
 
     uint32_t pf_metadata = 0;
+    access_type type{access_type::LOAD};
 
     champsim::address address{};
     champsim::address v_address{};
     champsim::address data{};
     champsim::chrono::clock::time_point ready_time = champsim::chrono::clock::time_point::max();
+    champsim::chrono::clock::time_point time_enqueued = champsim::chrono::clock::time_point::max();
 
     std::vector<uint64_t> instr_depend_on_me{};
     std::vector<std::deque<response_type>*> to_return{};
@@ -264,6 +266,7 @@ public:
   [[nodiscard]] champsim::data::bytes primary_size() const;
   [[nodiscard]] champsim::data::bytes secondary_size() const;
   [[nodiscard]] bool is_tiered() const;
+  [[nodiscard]] bool is_cxl_address(champsim::address address) const { return is_secondary_address(address); }
 };
 
 #endif

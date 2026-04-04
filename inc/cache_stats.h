@@ -11,6 +11,7 @@
 
 struct cache_stats {
   std::string name;
+  uint64_t hit_latency_cycles = 0;
   // prefetch stats
   uint64_t pf_requested = 0;
   uint64_t pf_issued = 0;

@@ -25,6 +25,7 @@
 #include <fmt/ostream.h>
 
 #include "stats_printer.h"
+#include "stats_utils.h"
 
 namespace
 {
@@ -36,7 +37,18 @@ auto print_ratio(N num, D denom)
   }
   return std::string{"-"};
 }
+
+auto print_division(double num, double denom)
+{
+  if (denom > 0.0) {
+    return fmt::format("{:.4g}", num / denom);
+  }
+  return std::string{"-"};
+}
 } // namespace
+
+using champsim::average_offchip_demand_latency;
+using champsim::hierarchy_amat_estimate;
 
 std::vector<std::string> champsim::plain_printer::format(O3_CPU::stats_type stats)
 {
@@ -116,11 +128,12 @@ std::vector<std::string> champsim::plain_printer::format(CACHE::stats_type stats
                       stats.mshr_merge.value_or(std::pair{type, cpu}, mshr_merge_value_type{})));
     }
 
-    lines.push_back(fmt::format("cpu{}->{} PREFETCH REQUESTED: {:10} ISSUED: {:10} USEFUL: {:10} USELESS: {:10}", cpu, stats.name, stats.pf_requested,
+  lines.push_back(fmt::format("cpu{}->{} PREFETCH REQUESTED: {:10} ISSUED: {:10} USEFUL: {:10} USELESS: {:10}", cpu, stats.name, stats.pf_requested,
                                 stats.pf_issued, stats.pf_useful, stats.pf_useless));
 
-    uint64_t total_downstream_demands = total_mshr_return - stats.mshr_return.value_or(std::pair{access_type::PREFETCH, cpu}, mshr_return_value_type{});
-    lines.push_back(
+  uint64_t total_downstream_demands = total_mshr_return - stats.mshr_return.value_or(std::pair{access_type::PREFETCH, cpu}, mshr_return_value_type{});
+  lines.push_back(fmt::format("cpu{}->{} HIT LATENCY: {} cycles", cpu, stats.name, stats.hit_latency_cycles));
+  lines.push_back(
         fmt::format("cpu{}->{} AVERAGE MISS LATENCY: {} cycles", cpu, stats.name, ::print_ratio(stats.total_miss_latency_cycles, total_downstream_demands)));
   }
 
@@ -129,11 +142,43 @@ std::vector<std::string> champsim::plain_printer::format(CACHE::stats_type stats
 
 std::vector<std::string> champsim::plain_printer::format(DRAM_CHANNEL::stats_type stats)
 {
+  auto average_rq_occupancy = print_division(static_cast<double>(stats.total_rq_queue_occupancy), static_cast<double>(stats.cycles_elapsed));
+  auto average_wq_occupancy = print_division(static_cast<double>(stats.total_wq_queue_occupancy), static_cast<double>(stats.cycles_elapsed));
+  auto average_total_occupancy =
+      print_division(static_cast<double>(stats.total_rq_queue_occupancy + stats.total_wq_queue_occupancy), static_cast<double>(stats.cycles_elapsed));
+  auto average_rq_occupancy_ratio =
+      print_division(static_cast<double>(stats.total_rq_queue_occupancy), static_cast<double>(stats.cycles_elapsed) * static_cast<double>(stats.rq_capacity));
+  auto average_wq_occupancy_ratio =
+      print_division(static_cast<double>(stats.total_wq_queue_occupancy), static_cast<double>(stats.cycles_elapsed) * static_cast<double>(stats.wq_capacity));
+  auto average_total_occupancy_ratio = print_division(static_cast<double>(stats.total_rq_queue_occupancy + stats.total_wq_queue_occupancy),
+                                                      static_cast<double>(stats.cycles_elapsed) * static_cast<double>(stats.rq_capacity + stats.wq_capacity));
+  auto peak_rq_occupancy_ratio = print_division(static_cast<double>(stats.peak_rq_queue_occupancy), static_cast<double>(stats.rq_capacity));
+  auto peak_wq_occupancy_ratio = print_division(static_cast<double>(stats.peak_wq_queue_occupancy), static_cast<double>(stats.wq_capacity));
+  auto peak_total_occupancy_ratio =
+      print_division(static_cast<double>(stats.peak_total_queue_occupancy), static_cast<double>(stats.rq_capacity + stats.wq_capacity));
+  auto bandwidth_utilization = print_division(static_cast<double>(stats.bytes_transferred), stats.theoretical_max_bytes);
+
   std::vector<std::string> lines{};
   lines.push_back(fmt::format("{} READ_REQUESTS: {:10}", stats.name, stats.read_requests));
   lines.push_back(fmt::format("  WRITE_REQUESTS: {:10}", stats.write_requests));
   lines.push_back(fmt::format("  BYTES_RETURNED: {:10}", stats.bytes_returned));
   lines.push_back(fmt::format("  BYTES_TRANSFERRED: {:10}", stats.bytes_transferred));
+  lines.push_back(fmt::format("  BANDWIDTH UTILIZATION: {}", bandwidth_utilization));
+  lines.push_back(fmt::format("  DEMAND_REQUESTS: {:10}", stats.demand_requests));
+  lines.push_back(fmt::format("  DEMAND_TIER_ACCESSES: {:10}", stats.demand_tier_accesses));
+  lines.push_back(fmt::format("  AVERAGE DEMAND ACCESS LATENCY: {} cycles", ::print_ratio(stats.total_demand_latency_cycles, stats.demand_requests)));
+  lines.push_back(fmt::format("  AVERAGE RQ OCCUPANCY: {}", average_rq_occupancy));
+  lines.push_back(fmt::format("  AVERAGE WQ OCCUPANCY: {}", average_wq_occupancy));
+  lines.push_back(fmt::format("  AVERAGE TOTAL QUEUE OCCUPANCY: {}", average_total_occupancy));
+  lines.push_back(fmt::format("  AVERAGE RQ OCCUPANCY RATIO: {}", average_rq_occupancy_ratio));
+  lines.push_back(fmt::format("  AVERAGE WQ OCCUPANCY RATIO: {}", average_wq_occupancy_ratio));
+  lines.push_back(fmt::format("  AVERAGE TOTAL QUEUE OCCUPANCY RATIO: {}", average_total_occupancy_ratio));
+  lines.push_back(fmt::format("  PEAK RQ OCCUPANCY: {:10}", stats.peak_rq_queue_occupancy));
+  lines.push_back(fmt::format("  PEAK WQ OCCUPANCY: {:10}", stats.peak_wq_queue_occupancy));
+  lines.push_back(fmt::format("  PEAK TOTAL QUEUE OCCUPANCY: {:10}", stats.peak_total_queue_occupancy));
+  lines.push_back(fmt::format("  PEAK RQ OCCUPANCY RATIO: {}", peak_rq_occupancy_ratio));
+  lines.push_back(fmt::format("  PEAK WQ OCCUPANCY RATIO: {}", peak_wq_occupancy_ratio));
+  lines.push_back(fmt::format("  PEAK TOTAL QUEUE OCCUPANCY RATIO: {}", peak_total_occupancy_ratio));
   lines.push_back(fmt::format("{} RQ ROW_BUFFER_HIT: {:10}", stats.name, stats.RQ_ROW_BUFFER_HIT));
   lines.push_back(fmt::format("  ROW_BUFFER_MISS: {:10}", stats.RQ_ROW_BUFFER_MISS));
   lines.push_back(fmt::format("  AVG DBUS CONGESTED CYCLE: {}", ::print_ratio(stats.dbus_cycle_congested, stats.dbus_count_congested)));
@@ -145,6 +190,21 @@ std::vector<std::string> champsim::plain_printer::format(DRAM_CHANNEL::stats_typ
     lines.push_back(fmt::format("{} REFRESHES ISSUED: {:10}", stats.name, stats.refresh_cycles));
   else
     lines.push_back(fmt::format("{} REFRESHES ISSUED: -", stats.name));
+
+  return lines;
+}
+
+std::vector<std::string> champsim::plain_printer::format(vmem_stats stats)
+{
+  std::vector<std::string> lines{};
+  lines.push_back(fmt::format("{} DDR_CAPACITY_PAGES: {:10}", stats.name, stats.ddr_capacity_pages));
+  lines.push_back(fmt::format("  CXL_CAPACITY_PAGES: {:10}", stats.cxl_capacity_pages));
+  lines.push_back(fmt::format("{} DDR_PAGE_ALLOCATIONS: {:10}", stats.name, stats.ddr_page_allocations));
+  lines.push_back(fmt::format("  CXL_PAGE_ALLOCATIONS: {:10}", stats.cxl_page_allocations));
+  lines.push_back(fmt::format("{} CURRENT_DDR_PAGES: {:10}", stats.name, stats.current_ddr_pages));
+  lines.push_back(fmt::format("  CURRENT_CXL_PAGES: {:10}", stats.current_cxl_pages));
+  lines.push_back(fmt::format("{} PEAK_DDR_PAGES: {:10}", stats.name, stats.peak_ddr_pages));
+  lines.push_back(fmt::format("  PEAK_CXL_PAGES: {:10}", stats.peak_cxl_pages));
 
   return lines;
 }
@@ -180,6 +240,11 @@ std::vector<std::string> champsim::plain_printer::format(champsim::phase_stats& 
       auto sublines = format(stat);
       std::move(std::begin(sublines), std::end(sublines), std::back_inserter(lines));
     }
+
+    lines.emplace_back("");
+    lines.emplace_back("Virtual Memory Statistics");
+    auto sim_vmem_lines = format(stats.sim_vmem_stats);
+    std::move(std::begin(sim_vmem_lines), std::end(sim_vmem_lines), std::back_inserter(lines));
   }
 
   lines.emplace_back("");
@@ -204,6 +269,46 @@ std::vector<std::string> champsim::plain_printer::format(champsim::phase_stats& 
     lines.emplace_back("");
     std::move(std::begin(sublines), std::end(sublines), std::back_inserter(lines));
   }
+
+  uint64_t ddr_tier_accesses = 0;
+  uint64_t total_tier_accesses = 0;
+  uint64_t ddr_latency_cycles = 0;
+  uint64_t ddr_demand_requests = 0;
+  uint64_t cxl_latency_cycles = 0;
+  uint64_t cxl_demand_requests = 0;
+  for (const auto& stat : stats.roi_dram_stats) {
+    total_tier_accesses += stat.demand_tier_accesses;
+    if (!stat.is_secondary) {
+      ddr_tier_accesses += stat.demand_tier_accesses;
+      ddr_latency_cycles += stat.total_demand_latency_cycles;
+      ddr_demand_requests += stat.demand_requests;
+    } else {
+      cxl_latency_cycles += stat.total_demand_latency_cycles;
+      cxl_demand_requests += stat.demand_requests;
+    }
+  }
+  lines.emplace_back("");
+  lines.push_back(fmt::format("DDR TIER ACCESSES: {:10}", ddr_tier_accesses));
+  lines.push_back(fmt::format("DDR TIER ACCESS RATE: {}", ::print_ratio(ddr_tier_accesses, total_tier_accesses)));
+  auto total_offchip_demand_latency_cycles = ddr_latency_cycles + cxl_latency_cycles;
+  auto total_offchip_demand_requests = ddr_demand_requests + cxl_demand_requests;
+  lines.push_back(
+      fmt::format("AVERAGE OFF-CHIP DEMAND ACCESS LATENCY: {} cycles", ::print_ratio(total_offchip_demand_latency_cycles, total_offchip_demand_requests)));
+  if (ddr_demand_requests > 0)
+    lines.push_back(fmt::format("AVERAGE DDR DEMAND ACCESS LATENCY: {} cycles", ::print_ratio(ddr_latency_cycles, ddr_demand_requests)));
+  if (cxl_demand_requests > 0)
+    lines.push_back(fmt::format("AVERAGE CXL DEMAND ACCESS LATENCY: {} cycles", ::print_ratio(cxl_latency_cycles, cxl_demand_requests)));
+
+  if (auto amat = hierarchy_amat_estimate(stats.roi_cache_stats, stats.roi_dram_stats); amat.has_value()) {
+    lines.push_back(fmt::format("HIERARCHY AMAT ESTIMATE: {:.4f} cycles", amat.value()));
+  } else {
+    lines.emplace_back("HIERARCHY AMAT ESTIMATE: - cycles");
+  }
+
+  lines.emplace_back("");
+  lines.emplace_back("Virtual Memory Statistics");
+  auto roi_vmem_lines = format(stats.roi_vmem_stats);
+  std::move(std::begin(roi_vmem_lines), std::end(roi_vmem_lines), std::back_inserter(lines));
 
   return lines;
 }

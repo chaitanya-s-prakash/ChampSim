@@ -173,6 +173,17 @@ long DRAM_CHANNEL::operate()
     }
   }
 
+  auto rq_occu = static_cast<uint64_t>(std::count_if(std::begin(RQ), std::end(RQ), [](const auto& x) { return x.has_value(); }));
+  auto wq_occu = static_cast<uint64_t>(std::count_if(std::begin(WQ), std::end(WQ), [](const auto& x) { return x.has_value(); }));
+  auto total_occu = rq_occu + wq_occu;
+  ++sim_stats.cycles_elapsed;
+  sim_stats.theoretical_max_bytes += static_cast<double>(channel_width.count()) * static_cast<double>(clock_period.count()) / static_cast<double>(data_bus_period.count());
+  sim_stats.total_rq_queue_occupancy += rq_occu;
+  sim_stats.total_wq_queue_occupancy += wq_occu;
+  sim_stats.peak_rq_queue_occupancy = std::max(sim_stats.peak_rq_queue_occupancy, rq_occu);
+  sim_stats.peak_wq_queue_occupancy = std::max(sim_stats.peak_wq_queue_occupancy, wq_occu);
+  sim_stats.peak_total_queue_occupancy = std::max(sim_stats.peak_total_queue_occupancy, total_occu);
+
   check_write_collision();
   check_read_collision();
   progress += finish_dbus_request();
@@ -201,6 +212,11 @@ long DRAM_CHANNEL::finish_dbus_request()
     } else {
       ++sim_stats.read_requests;
       sim_stats.bytes_returned += BLOCK_SIZE;
+      if (active_request->pkt->value().type != access_type::PREFETCH) {
+        ++sim_stats.demand_requests;
+        ++sim_stats.demand_tier_accesses;
+        sim_stats.total_demand_latency_cycles += (current_time - active_request->pkt->value().time_enqueued) / clock_period;
+      }
     }
 
     active_request->valid = false;
@@ -449,9 +465,13 @@ void DRAM_CHANNEL::initialize() {}
 
 void MEMORY_CONTROLLER::begin_phase()
 {
-  for (auto& chan : channels) {
+  for (std::size_t i = 0; i < channels.size(); ++i) {
+    auto& chan = channels[i];
     DRAM_CHANNEL::stats_type new_stats;
     new_stats.name = chan.channel_name;
+    new_stats.rq_capacity = std::size(chan.RQ);
+    new_stats.wq_capacity = std::size(chan.WQ);
+    new_stats.is_secondary = (i >= primary_channel_count);
     chan.sim_stats = new_stats;
     chan.warmup = warmup;
   }
@@ -569,7 +589,7 @@ void MEMORY_CONTROLLER::initiate_requests()
 }
 
 DRAM_CHANNEL::request_type::request_type(const typename champsim::channel::request_type& req)
-    : pf_metadata(req.pf_metadata), address(req.address), v_address(req.address), data(req.data), instr_depend_on_me(req.instr_depend_on_me)
+    : pf_metadata(req.pf_metadata), type(req.type), address(req.address), v_address(req.address), data(req.data), instr_depend_on_me(req.instr_depend_on_me)
 {
   asid[0] = req.asid[0];
   asid[1] = req.asid[1];
@@ -606,6 +626,7 @@ bool MEMORY_CONTROLLER::add_rq(const request_type& packet, champsim::channel* ul
     rq_it->value().forward_checked = false;
     rq_it->value().scheduled = false;
     rq_it->value().ready_time = current_time;
+    rq_it->value().time_enqueued = current_time;
     if (packet.response_requested)
       rq_it->value().to_return = {&ul->returned};
 
@@ -626,6 +647,7 @@ bool MEMORY_CONTROLLER::add_wq(const request_type& packet)
     wq_it->value().forward_checked = false;
     wq_it->value().scheduled = false;
     wq_it->value().ready_time = current_time;
+    wq_it->value().time_enqueued = current_time;
 
     return true;
   }

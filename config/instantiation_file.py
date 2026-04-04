@@ -424,6 +424,9 @@ def get_instantiation_lines(cores, caches, ptws, pmem, cxlmem, vmem, build_id):
     yield from cxx.function(f'{classname}::dram_view', [f'return {pmem["name"]};'], rtype='MEMORY_CONTROLLER&')
     yield ''
 
+    yield from cxx.function(f'{classname}::vmem_view', ['return vmem;'], rtype='VirtualMemory&')
+    yield ''
+
 def get_instantiation_header(num_cpus, env, build_id):
     yield '#include "environment.h"'
     yield '#include "vmem.h"'
@@ -448,6 +451,7 @@ def get_instantiation_header(num_cpus, env, build_id):
         'std::vector<std::reference_wrapper<CACHE>> cache_view() final;',
         'std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() final;',
         'MEMORY_CONTROLLER& dram_view() final;',
+        'VirtualMemory& vmem_view() final;',
         'std::vector<std::reference_wrapper<operable>> operable_view() final;'
     )
     struct_name = f'champsim::configured::generated_environment<0x{build_id}> final'

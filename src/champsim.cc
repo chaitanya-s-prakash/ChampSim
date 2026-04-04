@@ -28,6 +28,7 @@
 #include "operable.h"
 #include "phase_info.h"
 #include "tracereader.h"
+#include "vmem.h"
 
 constexpr int DEADLOCK_CYCLE{500};
 
@@ -66,6 +67,7 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
   auto [phase_name, is_warmup, length, trace_index, trace_names] = phase;
 
   // Initialize phase
+  env.vmem_view().begin_phase();
   for (champsim::operable& op : operables) {
     op.warmup = is_warmup;
     op.begin_phase();
@@ -142,6 +144,7 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
         for (champsim::operable& op : operables) {
           op.end_phase(cpu.cpu);
         }
+        env.vmem_view().end_phase();
 
         fmt::print("{} finished CPU {} instructions: {} cycles: {} cumulative IPC: {:.4g} (Simulation time: {:%H hr %M min %S sec})\n", phase_name, cpu.cpu,
                    cpu.sim_instr(), cpu.sim_cycle(), std::ceil(cpu.sim_instr()) / std::ceil(cpu.sim_cycle()), elapsed_time());
@@ -176,6 +179,9 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
                  [](const DRAM_CHANNEL& chan) { return chan.sim_stats; });
   std::transform(std::begin(dram.channels), std::end(dram.channels), std::back_inserter(stats.roi_dram_stats),
                  [](const DRAM_CHANNEL& chan) { return chan.roi_stats; });
+  env.vmem_view().end_phase();
+  stats.sim_vmem_stats = env.vmem_view().sim_stats;
+  stats.roi_vmem_stats = env.vmem_view().roi_stats;
 
   return stats;
 }

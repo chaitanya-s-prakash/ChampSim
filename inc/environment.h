@@ -26,6 +26,8 @@
 #include "operable.h"
 #include "ptw.h"
 
+class VirtualMemory;
+
 namespace champsim
 {
 struct environment {
@@ -33,6 +35,7 @@ struct environment {
   virtual std::vector<std::reference_wrapper<CACHE>> cache_view() = 0;
   virtual std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() = 0;
   virtual MEMORY_CONTROLLER& dram_view() = 0;
+  virtual VirtualMemory& vmem_view() = 0;
   virtual std::vector<std::reference_wrapper<operable>> operable_view() = 0;
 };
 

@@ -16,6 +16,7 @@
 
 #include "vmem.h"
 
+#include <algorithm>
 #include <cassert>
 #include <fmt/core.h>
 
@@ -44,6 +45,9 @@ VirtualMemory::VirtualMemory(champsim::data::bytes page_table_page_size, std::si
   if (required_bits > champsim::data::bits{champsim::lg2(dram.size().count())}) {
     fmt::print("[VMEM] WARNING: physical memory size is smaller than virtual memory size.\n"); // LCOV_EXCL_LINE
   }
+  sim_stats.ddr_capacity_pages = usable_primary_pages();
+  sim_stats.cxl_capacity_pages = usable_secondary_pages();
+  roi_stats = sim_stats;
   populate_pages();
   shuffle_pages();
 }
@@ -104,12 +108,81 @@ void VirtualMemory::ppage_pop()
 
 std::size_t VirtualMemory::available_ppages() const { return (ppage_free_list.size()); }
 
+uint64_t VirtualMemory::usable_primary_pages() const
+{
+  auto reserved_bytes = std::min(dram.primary_size(), champsim::data::bytes{1_MiB});
+  return static_cast<uint64_t>(((dram.primary_size() - reserved_bytes) / PAGE_SIZE).count());
+}
+
+uint64_t VirtualMemory::usable_secondary_pages() const { return static_cast<uint64_t>((dram.secondary_size() / PAGE_SIZE).count()); }
+
+VirtualMemory::memory_tier VirtualMemory::page_tier(champsim::page_number ppage) const
+{
+  return dram.is_cxl_address(champsim::address{ppage}) ? memory_tier::cxl : memory_tier::ddr;
+}
+
+void VirtualMemory::update_peak_occupancy(stats_type& stats)
+{
+  stats.peak_ddr_pages = std::max(stats.peak_ddr_pages, stats.current_ddr_pages);
+  stats.peak_cxl_pages = std::max(stats.peak_cxl_pages, stats.current_cxl_pages);
+}
+
+void VirtualMemory::record_allocation(champsim::page_number ppage)
+{
+  auto tier = page_tier(ppage);
+  auto [it, inserted] = page_residency.try_emplace(ppage, page_metadata{tier});
+
+  auto bump_allocation = [tier](stats_type& stats) {
+    if (tier == memory_tier::ddr)
+      ++stats.ddr_page_allocations;
+    else
+      ++stats.cxl_page_allocations;
+  };
+
+  bump_allocation(sim_stats);
+  bump_allocation(roi_stats);
+
+  if (inserted) {
+    if (tier == memory_tier::ddr) {
+      ++sim_stats.current_ddr_pages;
+      ++roi_stats.current_ddr_pages;
+    } else {
+      ++sim_stats.current_cxl_pages;
+      ++roi_stats.current_cxl_pages;
+    }
+    update_peak_occupancy(sim_stats);
+    update_peak_occupancy(roi_stats);
+  }
+
+  it->second.tier = tier;
+}
+
+void VirtualMemory::reset_roi_stats()
+{
+  roi_stats = stats_type{};
+  roi_stats.name = sim_stats.name;
+  roi_stats.ddr_capacity_pages = sim_stats.ddr_capacity_pages;
+  roi_stats.cxl_capacity_pages = sim_stats.cxl_capacity_pages;
+  roi_stats.current_ddr_pages = sim_stats.current_ddr_pages;
+  roi_stats.current_cxl_pages = sim_stats.current_cxl_pages;
+  roi_stats.peak_ddr_pages = roi_stats.current_ddr_pages;
+  roi_stats.peak_cxl_pages = roi_stats.current_cxl_pages;
+}
+
+void VirtualMemory::begin_phase()
+{
+  reset_roi_stats();
+}
+
+void VirtualMemory::end_phase() {}
+
 std::pair<champsim::page_number, champsim::chrono::clock::duration> VirtualMemory::va_to_pa(uint32_t cpu_num, champsim::page_number vaddr)
 {
   auto [ppage, fault] = vpage_to_ppage_map.try_emplace({cpu_num, champsim::page_number{vaddr}}, ppage_front());
 
   // this vpage doesn't yet have a ppage mapping
   if (fault) {
+    record_allocation(ppage->second);
     ppage_pop();
   }
 
@@ -126,6 +199,7 @@ std::pair<champsim::address, champsim::chrono::clock::duration> VirtualMemory::g
 {
   if (champsim::page_offset{next_pte_page} == champsim::page_offset{0}) {
     active_pte_page = ppage_front();
+    record_allocation(active_pte_page);
     ppage_pop();
   }
 
