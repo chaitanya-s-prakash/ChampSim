@@ -26,6 +26,7 @@
 #include "address.h"
 #include "champsim.h"
 #include "chrono.h"
+#include "vmem_stats.h"
 
 class MEMORY_CONTROLLER;
 
@@ -34,12 +35,21 @@ using pte_entry = champsim::data::size<long long, std::ratio<8>>;
 class VirtualMemory
 {
 private:
+  enum class memory_tier : uint8_t { ddr, cxl };
+  struct page_metadata {
+    memory_tier tier = memory_tier::ddr;
+  };
+
   std::map<std::pair<uint32_t, champsim::page_number>, champsim::page_number> vpage_to_ppage_map;
   std::map<std::tuple<uint32_t, uint32_t, champsim::address_slice<champsim::dynamic_extent>>, champsim::address> page_table;
+  std::map<champsim::page_number, page_metadata> page_residency;
   std::optional<uint64_t> randomization_seed;
   MEMORY_CONTROLLER& dram;
 
 public:
+  using stats_type = vmem_stats;
+  stats_type sim_stats{}, roi_stats{};
+
   const champsim::chrono::clock::duration minor_fault_penalty;
   const std::size_t pt_levels;
   const pte_entry pte_page_size; // Size of a PTE page
@@ -51,6 +61,12 @@ private:
 
   // champsim::page_number next_ppage;
   // champsim::page_number last_ppage;
+  [[nodiscard]] memory_tier page_tier(champsim::page_number ppage) const;
+  void record_allocation(champsim::page_number ppage);
+  void reset_roi_stats();
+  void update_peak_occupancy(stats_type& stats);
+  [[nodiscard]] uint64_t usable_primary_pages() const;
+  [[nodiscard]] uint64_t usable_secondary_pages() const;
 
   [[nodiscard]] champsim::page_number ppage_front() const;
   void ppage_pop();
@@ -95,6 +111,8 @@ public:
    * The count of unallocated physical pages.
    */
   [[nodiscard]] std::size_t available_ppages() const;
+  void begin_phase();
+  void end_phase();
 
   /**
    * Translate the given address from the virtual space to the physical space.

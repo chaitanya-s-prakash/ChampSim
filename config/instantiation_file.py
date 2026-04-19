@@ -22,7 +22,7 @@ import multiprocessing as mp
 from . import util
 from . import cxx
 
-pmem_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_dbus}}}, champsim::chrono::picoseconds{{{clock_period_mc}}}, std::size_t{{{_tRP}}}, std::size_t{{{_tRCD}}}, std::size_t{{{_tCAS}}}, std::size_t{{{_tRAS}}}, champsim::chrono::microseconds{{{_refresh_period}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {channels}, champsim::data::bytes{{{channel_width}}}, {_bank_rows}, {_bank_columns}, {ranks}, {bankgroups}, {banks}, {_refreshes_per_period}'
+pmem_fmtstr = 'MEMORY_CONTROLLER::memory_spec{{"{name}", champsim::chrono::picoseconds{{{clock_period_dbus}}}, champsim::chrono::picoseconds{{{clock_period_mc}}}, std::size_t{{{_tRP}}}, std::size_t{{{_tRCD}}}, std::size_t{{{_tCAS}}}, std::size_t{{{_tRAS}}}, champsim::chrono::microseconds{{{_refresh_period}}}, {rq_size}, {wq_size}, {channels}, champsim::data::bytes{{{channel_width}}}, {_bank_rows}, {_bank_columns}, {ranks}, {bankgroups}, {banks}, {_refreshes_per_period}}}'
 vmem_fmtstr = 'champsim::data::bytes{{{pte_page_size}}}, {num_levels}, champsim::chrono::picoseconds{{{clock_period}*{minor_fault_penalty}}}, {dram_name}, {_randomization}'
 
 queue_fmtstr = '{rq_size}, {pq_size}, {wq_size}, champsim::data::bits{{{_offset_bits}}}, {_queue_check_full_addr:b}'
@@ -104,6 +104,20 @@ def vector_string(iterable):
     if len(hoisted) == 1:
         return hoisted[0]
     return '{'+', '.join(hoisted)+'}'
+
+def get_memory_spec(mem):
+    return pmem_fmtstr.format(
+        clock_period_dbus=int(1000000/mem['data_rate']),
+        clock_period_mc=int(1000000/mem['frequency']),
+        _tRP=int(mem['tRP']),
+        _tRCD=int(mem['tRCD']),
+        _tCAS=int(mem['tCAS']),
+        _tRAS=int(mem['tRAS']),
+        _bank_rows=int(mem['bank_rows']),
+        _bank_columns=int(mem['columns']*8 if 'columns' in mem else mem['bank_columns']),
+        _refresh_period=int(1000*mem['refresh_period']),
+        _refreshes_per_period=int(mem['refreshes_per_period']),
+        **mem)
 
 def get_cpu_builder(cpu, caches, ul_pairs):
     '''
@@ -312,7 +326,7 @@ def decorate_queues(caches, ptws, pmem):
 def get_queue_info(ul_pairs, decoration):
     return [decoration.get(ll) for ll,_ in ul_pairs]
 
-def get_instantiation_lines(cores, caches, ptws, pmem, vmem, build_id):
+def get_instantiation_lines(cores, caches, ptws, pmem, cxlmem, vmem, build_id):
     '''
     Generate the lines for a C++ file that instantiates a configuration.
     '''
@@ -329,26 +343,19 @@ def get_instantiation_lines(cores, caches, ptws, pmem, vmem, build_id):
     yield from module_include_files(datas)
 
     # Get fastest clock period in picoseconds
-    global_clock_period = int(1000000/max(x['frequency'] for x in itertools.chain(cores, caches, ptws, (pmem,))))
+    freq_members = [*cores, *caches, *ptws, pmem]
+    if cxlmem is not None:
+        freq_members.append(cxlmem)
+    global_clock_period = int(1000000/max(x['frequency'] for x in freq_members))
 
     channels_head, channels_tail = util.cut((f'champsim::channel{{{queue_fmtstr.format(**v)}}}' for v in queues), n=-1)
     channel_instantiation_body = ('channels{', *(v+',' for v in channels_head), *channels_tail, '},')
 
     pmem_instantiation_body = (
         'DRAM{',
-        pmem_fmtstr.format(
-            clock_period_dbus=int(1000000/pmem['data_rate']),
-            clock_period_mc=int(1000000/pmem['frequency']),
-            _tRP=int(pmem['tRP']),
-            _tRCD=int(pmem['tRCD']),
-            _tCAS=int(pmem['tCAS']),
-            _tRAS=int(pmem['tRAS']),
-            _bank_rows=int(pmem['bank_rows']), #added for supporting old configs, mainly column size change
-            _bank_columns=int(pmem['columns']*8 if 'columns' in pmem else pmem['bank_columns']),
-            _refresh_period=int(1000*pmem['refresh_period']),
-            _refreshes_per_period=int(pmem['refreshes_per_period']),
-            _ulptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == pmem['name']),
-            **pmem),
+        '{' + vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == pmem['name']) + '},',
+        get_memory_spec(pmem) + (',' if cxlmem is not None else ''),
+        *((get_memory_spec(cxlmem),) if cxlmem is not None else tuple()),
         '},'
     )
 
@@ -417,6 +424,9 @@ def get_instantiation_lines(cores, caches, ptws, pmem, vmem, build_id):
     yield from cxx.function(f'{classname}::dram_view', [f'return {pmem["name"]};'], rtype='MEMORY_CONTROLLER&')
     yield ''
 
+    yield from cxx.function(f'{classname}::vmem_view', ['return vmem;'], rtype='VirtualMemory&')
+    yield ''
+
 def get_instantiation_header(num_cpus, env, build_id):
     yield '#include "environment.h"'
     yield '#include "vmem.h"'
@@ -441,6 +451,7 @@ def get_instantiation_header(num_cpus, env, build_id):
         'std::vector<std::reference_wrapper<CACHE>> cache_view() final;',
         'std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() final;',
         'MEMORY_CONTROLLER& dram_view() final;',
+        'VirtualMemory& vmem_view() final;',
         'std::vector<std::reference_wrapper<operable>> operable_view() final;'
     )
     struct_name = f'champsim::configured::generated_environment<0x{build_id}> final'

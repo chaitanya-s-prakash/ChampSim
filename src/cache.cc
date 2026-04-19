@@ -850,6 +850,8 @@ void CACHE::begin_phase()
 
   new_roi_stats.name = NAME;
   new_sim_stats.name = NAME;
+  new_roi_stats.hit_latency_cycles = HIT_LATENCY / clock_period;
+  new_sim_stats.hit_latency_cycles = HIT_LATENCY / clock_period;
 
   roi_stats = new_roi_stats;
   sim_stats = new_sim_stats;
@@ -866,6 +868,7 @@ void CACHE::end_phase(unsigned finished_cpu)
 {
   finished_cpu = finished_cpu;
   roi_stats.total_miss_latency_cycles = sim_stats.total_miss_latency_cycles;
+  roi_stats.hit_latency_cycles = sim_stats.hit_latency_cycles;
 
   roi_stats.hits = sim_stats.hits;
   roi_stats.misses = sim_stats.misses;

@@ -27,23 +27,67 @@
 #include "util/span.h"
 #include "util/units.h"
 
+namespace
+{
+champsim::address subtract_offset(champsim::address address, champsim::address offset)
+{
+  return champsim::address{address.to<uint64_t>() - offset.to<uint64_t>()};
+}
+} // namespace
+
+DRAM_ADDRESS_MAPPING MEMORY_CONTROLLER::make_address_mapping(const memory_spec& spec)
+{
+  return DRAM_ADDRESS_MAPPING{spec.channel_width, static_cast<std::size_t>(BLOCK_SIZE / spec.channel_width.count()), spec.channels, spec.bankgroups, spec.banks, spec.columns,
+                              spec.ranks, spec.rows};
+}
+
+champsim::data::bytes MEMORY_CONTROLLER::memory_size(const DRAM_ADDRESS_MAPPING& mapping)
+{
+  return champsim::data::bytes{(1ll << mapping.address_slicer.bit_size())};
+}
+
+MEMORY_CONTROLLER::MEMORY_CONTROLLER(std::vector<channel_type*>&& ul, memory_spec primary, std::optional<memory_spec> secondary)
+    : champsim::operable(primary.mc_period), queues(std::move(ul)), primary_channel_width(primary.channel_width),
+      secondary_channel_width(secondary.has_value() ? std::optional<champsim::data::bytes>{secondary->channel_width} : std::nullopt),
+      primary_channel_count(primary.channels), primary_name(primary.name), secondary_name(secondary.has_value() ? std::optional<std::string>{secondary->name} : std::nullopt),
+      primary_size_bytes(memory_size(make_address_mapping(primary))),
+      secondary_size_bytes(secondary.has_value() ? memory_size(make_address_mapping(*secondary)) : champsim::data::bytes{}), address_mapping(make_address_mapping(primary)),
+      secondary_address_mapping(secondary.has_value() ? std::optional<DRAM_ADDRESS_MAPPING>{make_address_mapping(*secondary)} : std::nullopt),
+      data_bus_period(primary.dbus_period)
+{
+  channels.reserve(primary.channels + (secondary.has_value() ? secondary->channels : 0));
+
+  for (std::size_t i{0}; i < primary.channels; ++i) {
+    channels.emplace_back(primary.dbus_period, primary.mc_period, primary.t_rp, primary.t_rcd, primary.t_cas, primary.t_ras, primary.refresh_period,
+                          primary.refreshes_per_period, primary.channel_width, primary.rq_size, primary.wq_size, address_mapping,
+                          primary.name + " Channel " + std::to_string(i));
+  }
+
+  if (secondary.has_value() && secondary_address_mapping.has_value()) {
+    auto secondary_offset = champsim::lowest_address_for_size(primary_size_bytes);
+    for (std::size_t i{0}; i < secondary->channels; ++i) {
+      channels.emplace_back(secondary->dbus_period, secondary->mc_period, secondary->t_rp, secondary->t_rcd, secondary->t_cas, secondary->t_ras,
+                            secondary->refresh_period, secondary->refreshes_per_period, secondary->channel_width, secondary->rq_size, secondary->wq_size,
+                            *secondary_address_mapping, secondary->name + " Channel " + std::to_string(i), secondary_offset);
+    }
+  }
+}
+
 MEMORY_CONTROLLER::MEMORY_CONTROLLER(champsim::chrono::picoseconds dbus_period, champsim::chrono::picoseconds mc_period, std::size_t t_rp, std::size_t t_rcd,
                                      std::size_t t_cas, std::size_t t_ras, champsim::chrono::microseconds refresh_period, std::vector<channel_type*>&& ul,
                                      std::size_t rq_size, std::size_t wq_size, std::size_t chans, champsim::data::bytes chan_width, std::size_t rows,
                                      std::size_t columns, std::size_t ranks, std::size_t bankgroups, std::size_t banks, std::size_t refreshes_per_period)
-    : champsim::operable(mc_period), queues(std::move(ul)), channel_width(chan_width),
-      address_mapping(chan_width, BLOCK_SIZE / chan_width.count(), chans, bankgroups, banks, columns, ranks, rows), data_bus_period(dbus_period)
+    : MEMORY_CONTROLLER(std::move(ul), memory_spec{"DRAM", dbus_period, mc_period, t_rp, t_rcd, t_cas, t_ras, refresh_period, rq_size, wq_size, chans,
+                                                   chan_width, rows, columns, ranks, bankgroups, banks, refreshes_per_period})
 {
-  for (std::size_t i{0}; i < chans; ++i) {
-    channels.emplace_back(dbus_period, mc_period, t_rp, t_rcd, t_cas, t_ras, refresh_period, refreshes_per_period, chan_width, rq_size, wq_size,
-                          address_mapping);
-  }
 }
 
 DRAM_CHANNEL::DRAM_CHANNEL(champsim::chrono::picoseconds dbus_period, champsim::chrono::picoseconds mc_period, std::size_t t_rp, std::size_t t_rcd,
                            std::size_t t_cas, std::size_t t_ras, champsim::chrono::microseconds refresh_period, std::size_t refreshes_per_period,
-                           champsim::data::bytes width, std::size_t rq_size, std::size_t wq_size, DRAM_ADDRESS_MAPPING addr_mapper)
-    : champsim::operable(mc_period), address_mapping(addr_mapper), WQ{wq_size}, RQ{rq_size}, channel_width(width),
+                           champsim::data::bytes width, std::size_t rq_size, std::size_t wq_size, DRAM_ADDRESS_MAPPING addr_mapper, std::string name,
+                           champsim::address address_offset_)
+    : champsim::operable(mc_period), channel_name(std::move(name)), address_mapping(addr_mapper), address_offset(address_offset_), WQ{wq_size}, RQ{rq_size},
+      channel_width(width),
       DRAM_ROWS_PER_REFRESH(address_mapping.rows() / refreshes_per_period), tRP(t_rp * mc_period), tRCD(t_rcd * mc_period), tCAS(t_cas * mc_period),
       tRAS(t_ras * mc_period), tREF(refresh_period / refreshes_per_period),
       tRFC(std::chrono::duration_cast<champsim::chrono::clock::duration>(
@@ -129,6 +173,17 @@ long DRAM_CHANNEL::operate()
     }
   }
 
+  auto rq_occu = static_cast<uint64_t>(std::count_if(std::begin(RQ), std::end(RQ), [](const auto& x) { return x.has_value(); }));
+  auto wq_occu = static_cast<uint64_t>(std::count_if(std::begin(WQ), std::end(WQ), [](const auto& x) { return x.has_value(); }));
+  auto total_occu = rq_occu + wq_occu;
+  ++sim_stats.cycles_elapsed;
+  sim_stats.theoretical_max_bytes += static_cast<double>(channel_width.count()) * static_cast<double>(clock_period.count()) / static_cast<double>(data_bus_period.count());
+  sim_stats.total_rq_queue_occupancy += rq_occu;
+  sim_stats.total_wq_queue_occupancy += wq_occu;
+  sim_stats.peak_rq_queue_occupancy = std::max(sim_stats.peak_rq_queue_occupancy, rq_occu);
+  sim_stats.peak_wq_queue_occupancy = std::max(sim_stats.peak_wq_queue_occupancy, wq_occu);
+  sim_stats.peak_total_queue_occupancy = std::max(sim_stats.peak_total_queue_occupancy, total_occu);
+
   check_write_collision();
   check_read_collision();
   progress += finish_dbus_request();
@@ -151,6 +206,19 @@ long DRAM_CHANNEL::finish_dbus_request()
       ret->push_back(response);
     }
 
+    sim_stats.bytes_transferred += BLOCK_SIZE;
+    if (active_request->is_write) {
+      ++sim_stats.write_requests;
+    } else {
+      ++sim_stats.read_requests;
+      sim_stats.bytes_returned += BLOCK_SIZE;
+      if (active_request->pkt->value().type != access_type::PREFETCH) {
+        ++sim_stats.demand_requests;
+        ++sim_stats.demand_tier_accesses;
+        sim_stats.total_demand_latency_cycles += (current_time - active_request->pkt->value().time_enqueued) / clock_period;
+      }
+    }
+
     active_request->valid = false;
 
     active_request->pkt->reset();
@@ -160,6 +228,8 @@ long DRAM_CHANNEL::finish_dbus_request()
 
   return progress;
 }
+
+champsim::address DRAM_CHANNEL::local_address(champsim::address addr) const { return subtract_offset(addr, address_offset); }
 
 long DRAM_CHANNEL::schedule_refresh()
 {
@@ -299,15 +369,16 @@ long DRAM_CHANNEL::populate_dbus()
 
 std::size_t DRAM_CHANNEL::bank_request_index(champsim::address addr) const
 {
-  auto op_bank = address_mapping.get_bank(addr);
+  auto op_bank = address_mapping.get_bank(local_address(addr));
 
   return (bankgroup_request_index(addr) * address_mapping.banks() + op_bank);
 }
 
 std::size_t DRAM_CHANNEL::bankgroup_request_index(champsim::address addr) const
 {
-  auto op_rank = address_mapping.get_rank(addr);
-  auto op_bankgroup = address_mapping.get_bankgroup(addr);
+  auto local = local_address(addr);
+  auto op_rank = address_mapping.get_rank(local);
+  auto op_bankgroup = address_mapping.get_bankgroup(local);
 
   return (op_rank * address_mapping.bankgroups() + op_bankgroup);
 }
@@ -344,7 +415,7 @@ long DRAM_CHANNEL::service_packet(DRAM_CHANNEL::queue_type::iterator pkt)
 {
   long progress{0};
   if (pkt->has_value() && pkt->value().ready_time <= current_time) {
-    auto op_row = address_mapping.get_row(pkt->value().address);
+    auto op_row = address_mapping.get_row(local_address(pkt->value().address));
     auto op_idx = bank_request_index(pkt->value().address);
 
     if (!bank_request[op_idx].valid && !bank_request[op_idx].under_refresh) {
@@ -352,9 +423,8 @@ long DRAM_CHANNEL::service_packet(DRAM_CHANNEL::queue_type::iterator pkt)
 
       // this bank is now busy
       auto row_charge_delay = champsim::chrono::clock::duration{bank_request[op_idx].open_row.has_value() ? tRP + tRCD : tRCD};
-      bank_request[op_idx] = {true,  row_buffer_hit,        false,
-                              false, std::optional{op_row}, current_time + tCAS + (row_buffer_hit ? champsim::chrono::clock::duration{} : row_charge_delay),
-                              pkt};
+      bank_request[op_idx] = {true, row_buffer_hit, false, false, write_mode, std::optional{op_row},
+                              current_time + tCAS + (row_buffer_hit ? champsim::chrono::clock::duration{} : row_charge_delay), pkt};
       pkt->value().scheduled = true;
       pkt->value().ready_time = champsim::chrono::clock::time_point::max();
 
@@ -369,28 +439,39 @@ void MEMORY_CONTROLLER::initialize()
 {
   using namespace champsim::data::data_literals;
   using namespace std::literals::chrono_literals;
-  auto sz = this->size();
-  if (champsim::data::gibibytes gb_sz{sz}; gb_sz > 1_GiB) {
-    fmt::print("Off-chip DRAM Size: {}", gb_sz);
-  } else if (champsim::data::mebibytes mb_sz{sz}; mb_sz > 1_MiB) {
-    fmt::print("Off-chip DRAM Size: {}", mb_sz);
-  } else if (champsim::data::kibibytes kb_sz{sz}; kb_sz > 1_kiB) {
-    fmt::print("Off-chip DRAM Size: {}", kb_sz);
-  } else {
-    fmt::print("Off-chip DRAM Size: {}", sz);
+  auto print_tier = [](std::string_view name, champsim::data::bytes sz, std::size_t channel_count, champsim::data::bytes width,
+                       champsim::chrono::picoseconds bus_period) {
+    if (champsim::data::gibibytes gb_sz{sz}; gb_sz > 1_GiB) {
+      fmt::print("{} Size: {}", name, gb_sz);
+    } else if (champsim::data::mebibytes mb_sz{sz}; mb_sz > 1_MiB) {
+      fmt::print("{} Size: {}", name, mb_sz);
+    } else if (champsim::data::kibibytes kb_sz{sz}; kb_sz > 1_kiB) {
+      fmt::print("{} Size: {}", name, kb_sz);
+    } else {
+      fmt::print("{} Size: {}", name, sz);
+    }
+
+    fmt::print(" Channels: {} Width: {}-bit Data Rate: {} MT/s\n", channel_count, champsim::data::bits_per_byte * width.count(), 1us / bus_period);
+  };
+
+  print_tier(primary_name, primary_size_bytes, primary_channel_count, primary_channel_width, data_bus_period);
+  if (has_secondary_tier() && secondary_name.has_value() && secondary_channel_width.has_value()) {
+    auto secondary_bus_period = channels.at(primary_channel_count).data_bus_period;
+    print_tier(*secondary_name, secondary_size_bytes, std::size(channels) - primary_channel_count, *secondary_channel_width, secondary_bus_period);
   }
-  fmt::print(" Channels: {} Width: {}-bit Data Rate: {} MT/s\n", std::size(channels), champsim::data::bits_per_byte * channel_width.count(),
-             1us / (data_bus_period));
 }
 
 void DRAM_CHANNEL::initialize() {}
 
 void MEMORY_CONTROLLER::begin_phase()
 {
-  std::size_t chan_idx = 0;
-  for (auto& chan : channels) {
+  for (std::size_t i = 0; i < channels.size(); ++i) {
+    auto& chan = channels[i];
     DRAM_CHANNEL::stats_type new_stats;
-    new_stats.name = "Channel " + std::to_string(chan_idx++);
+    new_stats.name = chan.channel_name;
+    new_stats.rq_capacity = std::size(chan.RQ);
+    new_stats.wq_capacity = std::size(chan.WQ);
+    new_stats.is_secondary = (i >= primary_channel_count);
     chan.sim_stats = new_stats;
     chan.warmup = warmup;
   }
@@ -425,8 +506,8 @@ void DRAM_CHANNEL::check_write_collision()
 {
   for (auto wq_it = std::begin(WQ); wq_it != std::end(WQ); ++wq_it) {
     if (wq_it->has_value() && !wq_it->value().forward_checked) {
-      auto checker = [addr_map = address_mapping, check_val = wq_it->value().address](const auto& pkt) {
-        return pkt.has_value() && addr_map.is_collision(pkt.value().address, check_val);
+      auto checker = [this, check_val = local_address(wq_it->value().address)](const auto& pkt) {
+        return pkt.has_value() && address_mapping.is_collision(local_address(pkt.value().address), check_val);
       };
 
       auto found = std::find_if(std::begin(WQ), wq_it, checker); // Forward check
@@ -447,8 +528,8 @@ void DRAM_CHANNEL::check_read_collision()
 {
   for (auto rq_it = std::begin(RQ); rq_it != std::end(RQ); ++rq_it) {
     if (rq_it->has_value() && !rq_it->value().forward_checked) {
-      auto checker = [addr_map = address_mapping, check_val = rq_it->value().address](const auto& x) {
-        return x.has_value() && addr_map.is_collision(x.value().address, check_val);
+      auto checker = [this, check_val = local_address(rq_it->value().address)](const auto& x) {
+        return x.has_value() && address_mapping.is_collision(local_address(x.value().address), check_val);
       };
       // write forward
       if (auto wq_it = std::find_if(std::begin(WQ), std::end(WQ), checker); wq_it != std::end(WQ)) {
@@ -508,15 +589,36 @@ void MEMORY_CONTROLLER::initiate_requests()
 }
 
 DRAM_CHANNEL::request_type::request_type(const typename champsim::channel::request_type& req)
-    : pf_metadata(req.pf_metadata), address(req.address), v_address(req.address), data(req.data), instr_depend_on_me(req.instr_depend_on_me)
+    : pf_metadata(req.pf_metadata), type(req.type), address(req.address), v_address(req.address), data(req.data), instr_depend_on_me(req.instr_depend_on_me)
 {
   asid[0] = req.asid[0];
   asid[1] = req.asid[1];
 }
 
+bool MEMORY_CONTROLLER::has_secondary_tier() const { return secondary_address_mapping.has_value() && secondary_size_bytes.count() > 0; }
+
+bool MEMORY_CONTROLLER::is_secondary_address(champsim::address address) const
+{
+  return has_secondary_tier() && address.to<uint64_t>() >= static_cast<uint64_t>(primary_size_bytes.count());
+}
+
+champsim::address MEMORY_CONTROLLER::normalize_secondary_address(champsim::address address) const
+{
+  return subtract_offset(address, champsim::lowest_address_for_size(primary_size_bytes));
+}
+
+std::size_t MEMORY_CONTROLLER::channel_index(champsim::address address) const
+{
+  if (is_secondary_address(address) && secondary_address_mapping.has_value()) {
+    return primary_channel_count + secondary_address_mapping->get_channel(normalize_secondary_address(address));
+  }
+
+  return address_mapping.get_channel(address);
+}
+
 bool MEMORY_CONTROLLER::add_rq(const request_type& packet, champsim::channel* ul)
 {
-  auto& channel = channels[address_mapping.get_channel(packet.address)];
+  auto& channel = channels[channel_index(packet.address)];
 
   if (auto rq_it = std::find_if_not(std::begin(channel.RQ), std::end(channel.RQ), [this](const auto& pkt) { return pkt.has_value(); });
       rq_it != std::end(channel.RQ)) {
@@ -524,6 +626,7 @@ bool MEMORY_CONTROLLER::add_rq(const request_type& packet, champsim::channel* ul
     rq_it->value().forward_checked = false;
     rq_it->value().scheduled = false;
     rq_it->value().ready_time = current_time;
+    rq_it->value().time_enqueued = current_time;
     if (packet.response_requested)
       rq_it->value().to_return = {&ul->returned};
 
@@ -535,7 +638,7 @@ bool MEMORY_CONTROLLER::add_rq(const request_type& packet, champsim::channel* ul
 
 bool MEMORY_CONTROLLER::add_wq(const request_type& packet)
 {
-  auto& channel = channels[address_mapping.get_channel(packet.address)];
+  auto& channel = channels[channel_index(packet.address)];
 
   // search for the empty index
   if (auto wq_it = std::find_if_not(std::begin(channel.WQ), std::end(channel.WQ), [](const auto& pkt) { return pkt.has_value(); });
@@ -544,6 +647,7 @@ bool MEMORY_CONTROLLER::add_wq(const request_type& packet)
     wq_it->value().forward_checked = false;
     wq_it->value().scheduled = false;
     wq_it->value().ready_time = current_time;
+    wq_it->value().time_enqueued = current_time;
 
     return true;
   }
@@ -597,7 +701,10 @@ unsigned long DRAM_ADDRESS_MAPPING::get_column(champsim::address address) const
   return std::get<SLICER_COLUMN_IDX>(address_slicer(address)).to<unsigned long>();
 }
 
-champsim::data::bytes MEMORY_CONTROLLER::size() const { return champsim::data::bytes{(1ll << address_mapping.address_slicer.bit_size())}; }
+champsim::data::bytes MEMORY_CONTROLLER::size() const { return primary_size_bytes + secondary_size_bytes; }
+champsim::data::bytes MEMORY_CONTROLLER::primary_size() const { return primary_size_bytes; }
+champsim::data::bytes MEMORY_CONTROLLER::secondary_size() const { return secondary_size_bytes; }
+bool MEMORY_CONTROLLER::is_tiered() const { return has_secondary_tier(); }
 champsim::data::bytes DRAM_CHANNEL::density() const
 {
   return champsim::data::bytes{(long long)(address_mapping.rows() * address_mapping.columns() * address_mapping.banks() * address_mapping.bankgroups())};
@@ -615,9 +722,8 @@ std::size_t DRAM_CHANNEL::bankgroup_request_capacity() const { return std::size(
 // LCOV_EXCL_START Exclude the following function from LCOV
 void MEMORY_CONTROLLER::print_deadlock()
 {
-  int j = 0;
   for (auto& chan : channels) {
-    fmt::print("DRAM Channel {}\n", j++);
+    fmt::print("{}\n", chan.channel_name);
     chan.print_deadlock();
   }
 }

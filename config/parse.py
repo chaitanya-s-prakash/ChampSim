@@ -272,11 +272,11 @@ class NormalizedConfiguration:
             cpu
         ) for cpu in self.cores]
 
-        # The name 'DRAM' is reserved for the physical memory
-        self.caches = {k:v for k,v in self.caches.items() if k != 'DRAM'}
+        # The names 'DRAM' and 'CXL' are reserved for physical memory tiers
+        self.caches = {k:v for k,v in self.caches.items() if k not in ('DRAM', 'CXL')}
 
         self.pmem = config_file.get('physical_memory', {})
-        
+
         #this allows frequency to be specified instead of data rate or vice-versa for DRAM
         if('frequency' in self.pmem.keys()):
             self.pmem['data_rate'] = self.pmem['frequency']
@@ -286,6 +286,17 @@ class NormalizedConfiguration:
 
         if verbose:
             print('P: pmem', list(self.pmem.keys()))
+
+        self.cxlmem = config_file.get('cxl_memory')
+        if self.cxlmem is not None:
+            if('frequency' in self.cxlmem.keys()):
+                self.cxlmem['data_rate'] = self.cxlmem['frequency']
+                self.cxlmem['frequency'] = self.cxlmem['frequency']/2
+            elif('data_rate' in self.cxlmem.keys()):
+                self.cxlmem['frequency'] = self.cxlmem['data_rate']/2
+
+        if verbose and self.cxlmem is not None:
+            print('P: cxlmem', list(self.cxlmem.keys()))
 
         self.vmem = config_file.get('virtual_memory', {})
 
@@ -302,6 +313,7 @@ class NormalizedConfiguration:
         self.caches = util.chain(self.caches, rhs.caches)
         self.ptws = util.chain(self.ptws, rhs.ptws)
         self.pmem = util.chain(self.pmem, rhs.pmem)
+        self.cxlmem = util.chain(self.cxlmem or {}, rhs.cxlmem or {}) if (self.cxlmem is not None or rhs.cxlmem is not None) else None
         self.vmem = util.chain(self.vmem, rhs.vmem)
         self.root = util.chain(self.root, rhs.root)
 
@@ -334,6 +346,15 @@ class NormalizedConfiguration:
             'refresh_period': 32, 'refreshes_per_period': 8192
         })
         pmem = util.chain(pmem,(do_deprecation(pmem, pmem_deprecation_keys,pmem_deprecation_warnings)))
+
+        cxlmem = None
+        if self.cxlmem is not None:
+            cxlmem = util.chain(self.cxlmem, {
+                'name': 'CXL', 'data_rate': 1600, 'frequency': 800, 'channels': 1, 'ranks': 1, 'bankgroups': 8, 'banks': 4, 'bank_rows': 65536, 'bank_columns': 1024,
+                'channel_width': 8, 'wq_size': 64, 'rq_size': 64, 'tRP': 40, 'tRCD': 40, 'tCAS': 40, 'tRAS' : 77,
+                'refresh_period': 32, 'refreshes_per_period': 8192
+            })
+            cxlmem = util.chain(cxlmem,(do_deprecation(cxlmem, pmem_deprecation_keys,pmem_deprecation_warnings)))
         
         #convert vmem boolean to string
         vmem = util.chain(
@@ -434,6 +455,7 @@ class NormalizedConfiguration:
             'caches': tuple(caches.values()),
             'ptws': tuple(ptws.values()),
             'pmem': pmem,
+            'cxlmem': cxlmem,
             'vmem': vmem
         }
         module_info = {

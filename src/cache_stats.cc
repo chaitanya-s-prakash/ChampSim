@@ -3,6 +3,8 @@
 cache_stats operator-(cache_stats lhs, cache_stats rhs)
 {
   cache_stats result;
+  result.name = lhs.name;
+  result.hit_latency_cycles = lhs.hit_latency_cycles;
   result.pf_requested = lhs.pf_requested - rhs.pf_requested;
   result.pf_issued = lhs.pf_issued - rhs.pf_issued;
   result.pf_useful = lhs.pf_useful - rhs.pf_useful;
