@@ -625,8 +625,11 @@ bool MEMORY_CONTROLLER::add_rq(const request_type& packet, champsim::channel* ul
     *rq_it = DRAM_CHANNEL::request_type{packet};
     rq_it->value().forward_checked = false;
     rq_it->value().scheduled = false;
-    rq_it->value().ready_time = current_time;
-    rq_it->value().time_enqueued = current_time;
+    rq_it->value().ready_time = channel.current_time;
+    // Use the channel's own current_time so latency is measured in the channel's
+    // clock domain. Using MEMORY_CONTROLLER::current_time causes a systematic drift
+    // when the secondary (CXL) channel has a different clock period than the primary.
+    rq_it->value().time_enqueued = channel.current_time;
     if (packet.response_requested)
       rq_it->value().to_return = {&ul->returned};
 
@@ -646,8 +649,8 @@ bool MEMORY_CONTROLLER::add_wq(const request_type& packet)
     *wq_it = DRAM_CHANNEL::request_type{packet};
     wq_it->value().forward_checked = false;
     wq_it->value().scheduled = false;
-    wq_it->value().ready_time = current_time;
-    wq_it->value().time_enqueued = current_time;
+    wq_it->value().ready_time = channel.current_time;
+    wq_it->value().time_enqueued = channel.current_time;  // same fix as add_rq
 
     return true;
   }
