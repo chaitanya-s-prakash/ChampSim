@@ -34,6 +34,7 @@
 #include "dram_stats.h"
 #include "extent_set.h"
 #include "operable.h"
+#include "page_placement.h"
 
 struct DRAM_ADDRESS_MAPPING {
   constexpr static std::size_t SLICER_OFFSET_IDX = 0;
@@ -250,6 +251,10 @@ private:
 public:
   std::vector<DRAM_CHANNEL> channels;
 
+  // Explicit page placement table for M5 migration.
+  // Public so the M5 policy can call placement_table.migrate().
+  PagePlacementTable placement_table;
+
   MEMORY_CONTROLLER(std::vector<channel_type*>&& ul, memory_spec primary, std::optional<memory_spec> secondary = {});
   MEMORY_CONTROLLER(champsim::chrono::picoseconds dbus_period, champsim::chrono::picoseconds mc_period, std::size_t t_rp, std::size_t t_rcd, std::size_t t_cas,
                     std::size_t t_ras, champsim::chrono::microseconds refresh_period, std::vector<channel_type*>&& ul, std::size_t rq_size, std::size_t wq_size,
@@ -266,7 +271,14 @@ public:
   [[nodiscard]] champsim::data::bytes primary_size() const;
   [[nodiscard]] champsim::data::bytes secondary_size() const;
   [[nodiscard]] bool is_tiered() const;
+
+  // Raw address-range check (used by VirtualMemory for initial allocation stats).
   [[nodiscard]] bool is_cxl_address(champsim::address address) const { return is_secondary_address(address); }
+
+  // Placement-table-aware tier check (used by HPT/HWT gating after migration).
+  [[nodiscard]] bool is_cxl_access(champsim::address address) {
+    return placement_table.get_tier(address) == PagePlacementTable::Tier::CXL;
+  }
 };
 
 #endif
