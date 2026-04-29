@@ -202,5 +202,34 @@
     "num_levels": 5,
     "minor_fault_penalty": 200,
     "randomization": false
+  },
+
+  "m5_policy": {
+    "page_size": 4096,
+    "cacheline_size": 64,
+
+    "cxl_extra_latency_ps": 0,
+    "migration_bandwidth_GBps": 10.0,
+
+    "migration_epoch_instrs": 10000000,
+    "tracker_reset_instrs": 0,
+
+    "hpt_cms_width": 8192,
+    "hpt_cms_depth": 4,
+    "hpt_top_k": 5,
+
+    "hwt_cms_width": 8192,
+    "hwt_cms_depth": 4,
+    "hwt_top_k": 5,
+    "hwt_density_threshold": 8,
+
+    "bw_density_ratio_threshold": 1.0,
+    "max_migrations_per_epoch": 5,
+    "min_candidates_per_epoch": 1,
+
+    "mglru_generations": 4,
+    "mglru_aging_interval_epochs": 1,
+
+    "migration_cooldown_epochs": 2
   }
 }
