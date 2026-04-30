@@ -299,6 +299,31 @@ std::vector<std::string> champsim::plain_printer::format(champsim::phase_stats& 
   if (cxl_demand_requests > 0)
     lines.push_back(fmt::format("AVERAGE CXL DEMAND ACCESS LATENCY: {} cycles", ::print_ratio(cxl_latency_cycles, cxl_demand_requests)));
 
+  // M5 Monitor: lifetime bandwidth density (computed from ROI stats).
+  // density = bytes_returned / pages_resident.
+  // CXL/DDR ratio > 1 means CXL holds hotter pages per unit capacity → migration is beneficial.
+  {
+    uint64_t ddr_bytes = 0, cxl_bytes = 0;
+    for (const auto& s : stats.roi_dram_stats) {
+      if (!s.is_secondary)
+        ddr_bytes += s.bytes_returned;
+      else
+        cxl_bytes += s.bytes_returned;
+    }
+    uint64_t ddr_pages = stats.roi_vmem_stats.current_ddr_pages;
+    uint64_t cxl_pages = stats.roi_vmem_stats.current_cxl_pages;
+    double ddr_density = (ddr_pages > 0) ? static_cast<double>(ddr_bytes) / static_cast<double>(ddr_pages) : 0.0;
+    double cxl_density = (cxl_pages > 0) ? static_cast<double>(cxl_bytes) / static_cast<double>(cxl_pages) : 0.0;
+    double ratio       = (ddr_density > 0.0) ? cxl_density / ddr_density : 0.0;
+    lines.emplace_back("");
+    lines.emplace_back("M5 Monitor Bandwidth Density (lifetime ROI)");
+    lines.push_back(fmt::format("  DDR READ BYTES: {:12}  CXL READ BYTES: {:12}", ddr_bytes, cxl_bytes));
+    lines.push_back(fmt::format("  DDR PAGES:      {:12}  CXL PAGES:      {:12}", ddr_pages, cxl_pages));
+    lines.push_back(fmt::format("  DDR BW DENSITY: {:.4f} bytes/page", ddr_density));
+    lines.push_back(fmt::format("  CXL BW DENSITY: {:.4f} bytes/page", cxl_density));
+    lines.push_back(fmt::format("  CXL/DDR DENSITY RATIO: {:.4f}  (>1 means migration is beneficial)", ratio));
+  }
+
   if (auto amat = hierarchy_amat_estimate(stats.roi_cache_stats, stats.roi_dram_stats); amat.has_value()) {
     lines.push_back(fmt::format("HIERARCHY AMAT ESTIMATE: {:.4f} cycles", amat.value()));
   } else {
