@@ -34,7 +34,9 @@
 #include "dram_stats.h"
 #include "extent_set.h"
 #include "operable.h"
+#include "cms_tracker.h"
 #include "m5_monitor.h"
+#include "m5_policy.h"
 #include "page_placement.h"
 
 struct DRAM_ADDRESS_MAPPING {
@@ -259,6 +261,12 @@ public:
   // Per-epoch bandwidth and density tracker for the M5 Monitor.
   // M5Manager calls monitor.reset_epoch() at each migration epoch boundary.
   m5::M5Monitor monitor;
+
+  // CXL-side hot page tracker (HPT) and hot word/cache-line tracker (HWT).
+  // Updated only for demand reads routed to CXL channels.
+  // M5Manager resets these at each epoch and queries top_entries() for candidates.
+  CmsTracker hpt;  // key = logical page number
+  CmsTracker hwt;  // key = page_num * lines_per_page + line_offset_in_page
 
   MEMORY_CONTROLLER(std::vector<channel_type*>&& ul, memory_spec primary, std::optional<memory_spec> secondary = {});
   MEMORY_CONTROLLER(champsim::chrono::picoseconds dbus_period, champsim::chrono::picoseconds mc_period, std::size_t t_rp, std::size_t t_rcd, std::size_t t_cas,
