@@ -65,4 +65,48 @@ void PagePlacementTable::migrate(uint64_t cxl_logical_ppage, uint64_t ddr_logica
 
   // Aggregate page counts are unchanged: DDR still holds the same number of
   // pages overall; we just swapped which logical pages occupy those slots.
+
+  // Reset generation on the newly promoted page so it starts as "hot" in DDR.
+  cxl_it->second.generation = 0;
+}
+
+void PagePlacementTable::set_cooldown(uint64_t logical_ppage, uint32_t epochs)
+{
+  auto it = table_.find(logical_ppage);
+  if (it != table_.end())
+    it->second.cooldown_epochs = epochs;
+}
+
+void PagePlacementTable::touch(uint64_t logical_ppage)
+{
+  // Only reset generation if the page is already registered and DDR-resident.
+  // Unregistered pages are handled lazily by get_routed_address.
+  auto it = table_.find(logical_ppage);
+  if (it != table_.end() && it->second.current_tier == Tier::DDR)
+    it->second.generation = 0;
+}
+
+void PagePlacementTable::age_all_ddr_pages(uint8_t max_generation)
+{
+  for (auto& [ppage, entry] : table_) {
+    if (entry.current_tier == Tier::DDR && entry.generation < max_generation)
+      ++entry.generation;
+    if (entry.cooldown_epochs > 0)
+      --entry.cooldown_epochs;
+  }
+}
+
+uint64_t PagePlacementTable::get_ddr_victim(uint8_t max_generation) const
+{
+  // Scan from coldest generation to hottest, return the first eligible DDR page.
+  for (int gen = static_cast<int>(max_generation); gen >= 0; --gen) {
+    for (const auto& [ppage, entry] : table_) {
+      if (entry.current_tier == Tier::DDR
+          && entry.generation == static_cast<uint8_t>(gen)
+          && entry.cooldown_epochs == 0) {
+        return ppage;
+      }
+    }
+  }
+  return UINT64_MAX;  // no valid victim found
 }

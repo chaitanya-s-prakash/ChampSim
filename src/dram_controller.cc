@@ -632,19 +632,25 @@ bool MEMORY_CONTROLLER::add_rq(const request_type& packet, champsim::channel* ul
   auto  chan_idx   = channel_index(routed_addr);
   auto& channel    = channels[chan_idx];
 
-  // HPT/HWT: update only for demand reads reaching CXL (not DDR, not prefetches, not writes).
+  // HPT/HWT + MGLRU: update trackers based on which tier this request goes to.
   // Use the logical (CPU-visible) address so keys are stable across migrations.
   const bool is_cxl_bound  = (chan_idx >= primary_channel_count);
   const bool is_demand_read = (packet.type != access_type::PREFETCH &&
                                packet.type != access_type::WRITE);
-  if (is_cxl_bound && is_demand_read) {
-    const uint64_t logical_raw   = packet.address.to<uint64_t>();
-    const uint64_t logical_ppage = logical_raw >> LOG2_PAGE_SIZE;
-    const uint64_t lines_per_page = PAGE_SIZE / BLOCK_SIZE;
-    const uint64_t line_in_page  = (logical_raw >> LOG2_BLOCK_SIZE) & (lines_per_page - 1);
+  const uint64_t logical_raw   = packet.address.to<uint64_t>();
+  const uint64_t logical_ppage = logical_raw >> LOG2_PAGE_SIZE;
 
-    hpt.update(logical_ppage);
-    hwt.update(logical_ppage * lines_per_page + line_in_page);
+  if (is_demand_read) {
+    if (is_cxl_bound) {
+      // CXL access — update HPT and HWT for hot-page/hot-line tracking.
+      const uint64_t lines_per_page = PAGE_SIZE / BLOCK_SIZE;
+      const uint64_t line_in_page   = (logical_raw >> LOG2_BLOCK_SIZE) & (lines_per_page - 1);
+      hpt.update(logical_ppage);
+      hwt.update(logical_ppage * lines_per_page + line_in_page);
+    } else {
+      // DDR access — reset MGLRU generation to mark the page as recently used.
+      placement_table.touch(logical_ppage);
+    }
   }
 
   if (auto rq_it = std::find_if_not(std::begin(channel.RQ), std::end(channel.RQ), [this](const auto& pkt) { return pkt.has_value(); });

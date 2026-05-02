@@ -25,8 +25,15 @@ public:
   enum class Tier : uint8_t { DDR, CXL };
 
   struct Entry {
-    Tier    current_tier;
-    uint64_t routed_ppage;  // page number used for DRAM routing (may differ from logical after migration)
+    Tier     current_tier;
+    uint64_t routed_ppage;    // page number used for DRAM routing (may differ from logical after migration)
+
+    // MGLRU-like recency: 0 = hottest (recently touched), max = coldest (victim candidate).
+    // Only meaningful for DDR-resident pages.
+    uint8_t  generation     = 0;
+
+    // Anti-ping-pong: epochs remaining before this page can be migrated again.
+    uint32_t cooldown_epochs = 0;
   };
 
 private:
@@ -60,6 +67,26 @@ public:
   // Swap routing between a CXL page and a DDR page.
   // Both pages must already be registered (call get_routed_address/get_tier first).
   void migrate(uint64_t cxl_logical_ppage, uint64_t ddr_logical_ppage);
+
+  // Set how many epochs a page must wait before it can be migrated again.
+  // Call for both participants immediately after migrate().
+  void set_cooldown(uint64_t logical_ppage, uint32_t epochs);
+
+  // ── MGLRU victim selection ───────────────────────────────────────────────
+
+  // Mark a DDR page as recently accessed (reset generation to 0).
+  // Called from MEMORY_CONTROLLER::add_rq for every DDR-bound demand read.
+  void touch(uint64_t logical_ppage);
+
+  // Age all DDR pages by one generation (capped at max_generation).
+  // Also ticks down cooldown counters for every tracked page.
+  // Called by M5Manager every mglru_aging_interval_epochs epochs.
+  void age_all_ddr_pages(uint8_t max_generation);
+
+  // Return the logical page number of the best DDR demotion victim:
+  // the DDR page in the oldest non-empty generation with no active cooldown.
+  // Returns UINT64_MAX if no valid victim exists.
+  uint64_t get_ddr_victim(uint8_t max_generation) const;
 
   uint64_t ddr_pages_used()      const { return ddr_pages_used_; }
   uint64_t cxl_pages_used()      const { return cxl_pages_used_; }
