@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include "access_type.h"
 #include "address.h"
@@ -45,6 +46,10 @@ class berti : public champsim::modules::prefetcher {
   static constexpr std::size_t IN_FLIGHT_ENTRIES = 32;
   static constexpr std::size_t PREFETCH_LATENCY_ENTRIES = 768;
   static constexpr uint64_t MAX_STORED_LATENCY = (uint64_t{1} << LATENCY_BITS) - 1;
+  static constexpr uint64_t HISTORY_TIMESTAMP_MASK = (uint64_t{1} << HISTORY_TIMESTAMP_BITS) - 1;
+  static constexpr uint64_t HISTORY_TIMESTAMP_HALF_RANGE = uint64_t{1} << (HISTORY_TIMESTAMP_BITS - 1);
+  static constexpr int64_t MIN_DELTA = -(int64_t{1} << (DELTA_BITS - 1));
+  static constexpr int64_t MAX_DELTA = (int64_t{1} << (DELTA_BITS - 1)) - 1;
 
   struct in_flight_entry {
     bool valid = false;
@@ -84,6 +89,8 @@ class berti : public champsim::modules::prefetcher {
     uint64_t prefetched_line_latency_uses = 0;
     uint64_t history_inserts = 0;
     uint64_t history_replacements = 0;
+    uint64_t history_searches = 0;
+    uint64_t timely_deltas = 0;
   };
 
   std::array<in_flight_entry, IN_FLIGHT_ENTRIES> in_flight{};
@@ -101,11 +108,15 @@ class berti : public champsim::modules::prefetcher {
   [[nodiscard]] static uint64_t delta_table_ip_tag(champsim::address ip);
   [[nodiscard]] static uint64_t history_line(uint64_t line);
   [[nodiscard]] static uint64_t history_timestamp(uint64_t cycle);
+  [[nodiscard]] static uint64_t history_timestamp_distance(uint64_t older_timestamp, uint64_t newer_cycle);
+  [[nodiscard]] static bool history_timestamp_not_after(uint64_t timestamp, uint64_t cycle);
   [[nodiscard]] static uint64_t elapsed_cycles(uint64_t begin, uint64_t end);
   [[nodiscard]] static uint64_t stored_latency(uint64_t latency);
   [[nodiscard]] static bool is_demand(access_type type);
 
   void add_history(champsim::address ip, uint64_t line, uint64_t cycle);
+  [[nodiscard]] std::vector<int64_t> find_timely_deltas(champsim::address ip, uint64_t line, uint64_t latency, uint64_t cycle) const;
+  void record_timely_delta_search(champsim::address ip, uint64_t line, uint64_t latency, uint64_t cycle);
 
   [[nodiscard]] in_flight_entry* find_in_flight(uint64_t line);
   [[nodiscard]] in_flight_entry& get_or_allocate_in_flight(uint64_t line);

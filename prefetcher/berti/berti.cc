@@ -54,8 +54,17 @@ uint64_t berti::history_line(uint64_t line)
 
 uint64_t berti::history_timestamp(uint64_t cycle)
 {
-  const auto mask = (uint64_t{1} << HISTORY_TIMESTAMP_BITS) - 1;
-  return cycle & mask;
+  return cycle & HISTORY_TIMESTAMP_MASK;
+}
+
+uint64_t berti::history_timestamp_distance(uint64_t older_timestamp, uint64_t newer_cycle)
+{
+  return (history_timestamp(newer_cycle) - older_timestamp) & HISTORY_TIMESTAMP_MASK;
+}
+
+bool berti::history_timestamp_not_after(uint64_t timestamp, uint64_t cycle)
+{
+  return history_timestamp_distance(timestamp, cycle) < HISTORY_TIMESTAMP_HALF_RANGE;
 }
 
 uint64_t berti::elapsed_cycles(uint64_t begin, uint64_t end)
@@ -83,6 +92,59 @@ void berti::add_history(champsim::address ip, uint64_t line, uint64_t cycle)
   victim = history_entry{true, history_ip_tag(ip), history_line(line), history_timestamp(cycle)};
   set.next_victim = (set.next_victim + 1) % HISTORY_WAYS;
   ++stats.history_inserts;
+}
+
+std::vector<int64_t> berti::find_timely_deltas(champsim::address ip, uint64_t line, uint64_t latency, uint64_t cycle) const
+{
+  if (latency == 0 || latency > cycle)
+    return {};
+
+  struct candidate {
+    history_entry entry;
+    uint64_t age = 0;
+  };
+
+  const auto ready_cycle = cycle - latency;
+  const auto tag = history_ip_tag(ip);
+  const auto current_line = static_cast<int64_t>(history_line(line));
+  const auto& set = history.at(history_set_index(ip));
+
+  std::vector<candidate> candidates;
+  candidates.reserve(HISTORY_WAYS);
+  for (const auto& entry : set.entries) {
+    if (entry.valid && entry.ip_tag == tag && history_timestamp_not_after(entry.timestamp, ready_cycle))
+      candidates.push_back(candidate{entry, history_timestamp_distance(entry.timestamp, cycle)});
+  }
+
+  std::sort(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs) { return lhs.age < rhs.age; });
+
+  std::vector<int64_t> deltas;
+  deltas.reserve(MAX_TIMELY_DELTAS);
+  for (const auto& candidate : candidates) {
+    if (deltas.size() >= MAX_TIMELY_DELTAS)
+      break;
+
+    const auto delta = current_line - static_cast<int64_t>(candidate.entry.line);
+    if (delta == 0 || delta < MIN_DELTA || delta > MAX_DELTA)
+      continue;
+
+    if (std::find(deltas.begin(), deltas.end(), delta) != deltas.end())
+      continue;
+
+    deltas.push_back(delta);
+  }
+
+  return deltas;
+}
+
+void berti::record_timely_delta_search(champsim::address ip, uint64_t line, uint64_t latency, uint64_t cycle)
+{
+  if (latency == 0 || latency > cycle)
+    return;
+
+  const auto timely = find_timely_deltas(ip, line, latency, cycle);
+  ++stats.history_searches;
+  stats.timely_deltas += timely.size();
 }
 
 berti::in_flight_entry* berti::find_in_flight(uint64_t line)
@@ -196,8 +258,10 @@ uint32_t berti::prefetcher_cache_operate(champsim::address addr, champsim::addre
   const auto cycle = current_cycle();
   const auto line = line_number(addr);
 
-  if (useful_prefetch)
-    consume_prefetch_latency(line);
+  if (useful_prefetch) {
+    const auto latency = consume_prefetch_latency(line);
+    record_timely_delta_search(ip, line, latency, cycle);
+  }
 
   if (!cache_hit || useful_prefetch)
     add_history(ip, line, cycle);
@@ -224,6 +288,7 @@ uint32_t berti::prefetcher_cache_fill(champsim::address addr, long set, long way
         ++stats.demand_latency_samples;
         stats.demand_latency_cycles += latency;
       }
+      record_timely_delta_search(entry->demand_ip, line, latency, cycle);
       remove_demand_issue(*entry);
     }
 
@@ -255,4 +320,6 @@ void berti::prefetcher_final_stats()
   fmt::print("  PREFETCHED_LINE_LATENCY_USES:  {}\n", stats.prefetched_line_latency_uses);
   fmt::print("  HISTORY_INSERTS:               {}\n", stats.history_inserts);
   fmt::print("  HISTORY_REPLACEMENTS:          {}\n", stats.history_replacements);
+  fmt::print("  HISTORY_SEARCHES:              {}\n", stats.history_searches);
+  fmt::print("  TIMELY_DELTAS:                 {}\n", stats.timely_deltas);
 }
