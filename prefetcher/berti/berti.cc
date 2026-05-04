@@ -282,6 +282,8 @@ uint32_t berti::prefetcher_cache_fill(champsim::address addr, long set, long way
     forget_prefetch_latency(line_number(evicted_addr));
 
   if (entry != nullptr) {
+    const auto demand_was_valid = entry->demand_valid;
+
     if (entry->demand_valid) {
       const auto latency = stored_latency(elapsed_cycles(entry->demand_cycle, cycle));
       if (latency > 0) {
@@ -298,7 +300,8 @@ uint32_t berti::prefetcher_cache_fill(champsim::address addr, long set, long way
         ++stats.prefetch_latency_samples;
         stats.prefetch_latency_cycles += latency;
       }
-      remember_prefetch_latency(line, latency);
+      if (!demand_was_valid)
+        remember_prefetch_latency(line, latency);
       remove_prefetch_issue(*entry);
     } else if (!prefetch && entry->prefetch_valid) {
       remove_prefetch_issue(*entry);
