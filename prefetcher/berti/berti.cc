@@ -175,17 +175,9 @@ void berti::issue_prefetches(champsim::address ip, uint64_t line, uint64_t cycle
 
   const auto candidates = selected_deltas(*entry);
   const auto l1_mshr_available = intern_->get_mshr_occupancy_ratio() < L1_MSHR_OCCUPANCY_THRESHOLD;
-  std::size_t examined = 0;
   for (const auto& delta : candidates) {
-    if (examined >= MAX_SELECTED_DELTAS)
-      break;
-    ++examined;
-
     uint64_t pf_line = 0;
     if (!target_line(line, delta.delta, pf_line))
-      continue;
-
-    if (pf_line == line)
       continue;
 
     if (auto* inflight = find_in_flight(pf_line); inflight != nullptr && inflight->prefetch_valid)
