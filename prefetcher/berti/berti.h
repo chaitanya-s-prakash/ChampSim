@@ -99,6 +99,8 @@ class berti : public champsim::modules::prefetcher {
     uint64_t demand_latency_samples = 0;
     uint64_t demand_latency_cycles = 0;
     uint64_t prefetch_issue_records = 0;
+    uint64_t prefetch_issued_l1 = 0;
+    uint64_t prefetch_issued_l2 = 0;
     uint64_t prefetch_latency_samples = 0;
     uint64_t prefetch_latency_cycles = 0;
     uint64_t prefetched_line_latency_uses = 0;
@@ -141,6 +143,11 @@ class berti : public champsim::modules::prefetcher {
   void add_history(champsim::address ip, uint64_t line, uint64_t cycle);
   [[nodiscard]] std::vector<int64_t> find_timely_deltas(champsim::address ip, uint64_t line, uint64_t latency, uint64_t cycle) const;
   void train(champsim::address ip, uint64_t line, uint64_t latency, uint64_t cycle);
+  void issue_prefetches(champsim::address ip, uint64_t line, uint64_t cycle);
+  [[nodiscard]] std::vector<delta_entry> selected_deltas(const ip_delta_entry& entry) const;
+  [[nodiscard]] static bool selected_delta_status(delta_status status);
+  [[nodiscard]] static int delta_status_priority(delta_status status);
+  [[nodiscard]] static bool target_line(uint64_t line, int64_t delta, uint64_t& target);
 
   [[nodiscard]] ip_delta_entry* find_delta_entry(uint64_t ip_tag);
   [[nodiscard]] ip_delta_entry& get_or_allocate_delta_entry(uint64_t ip_tag);

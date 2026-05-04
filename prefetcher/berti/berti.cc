@@ -163,6 +163,115 @@ void berti::train(champsim::address ip, uint64_t line, uint64_t latency, uint64_
     classify(entry);
 }
 
+void berti::issue_prefetches(champsim::address ip, uint64_t line, uint64_t cycle)
+{
+  auto* entry = find_delta_entry(delta_table_ip_tag(ip));
+  if (entry == nullptr)
+    return;
+
+  const auto candidates = selected_deltas(*entry);
+  const auto l1_mshr_available = intern_->get_mshr_occupancy_ratio() < L1_MSHR_OCCUPANCY_THRESHOLD;
+  std::size_t examined = 0;
+  for (const auto& delta : candidates) {
+    if (examined >= MAX_SELECTED_DELTAS)
+      break;
+    ++examined;
+
+    uint64_t pf_line = 0;
+    if (!target_line(line, delta.delta, pf_line))
+      continue;
+
+    if (pf_line == line)
+      continue;
+
+    if (auto* inflight = find_in_flight(pf_line); inflight != nullptr && inflight->prefetch_valid)
+      continue;
+
+    const auto fill_l1 = delta.status == delta_status::l1_pref && l1_mshr_available;
+    if (prefetch_line(address_from_line(pf_line), fill_l1, 0)) {
+      record_prefetch_issue(pf_line, cycle);
+      if (fill_l1)
+        ++stats.prefetch_issued_l1;
+      else
+        ++stats.prefetch_issued_l2;
+    }
+  }
+}
+
+std::vector<berti::delta_entry> berti::selected_deltas(const ip_delta_entry& entry) const
+{
+  std::vector<delta_entry> selected;
+  selected.reserve(MAX_SELECTED_DELTAS);
+  for (const auto& delta : entry.deltas) {
+    if (delta.valid && selected_delta_status(delta.status))
+      selected.push_back(delta);
+  }
+
+  if (entry.search_count >= WARMUP_MIN_SEARCHES) {
+    for (const auto& delta : entry.deltas) {
+      if (!delta.valid)
+        continue;
+
+      const auto already_selected = std::find_if(selected.begin(), selected.end(), [&delta](const auto& candidate) { return candidate.delta == delta.delta; });
+      if (already_selected != selected.end())
+        continue;
+
+      const auto coverage_percent = (100 * static_cast<uint64_t>(delta.seen_this_round)) / entry.search_count;
+      if (coverage_percent < WARMUP_COVERAGE_PERCENT)
+        continue;
+
+      auto warmup_delta = delta;
+      warmup_delta.coverage = delta.seen_this_round;
+      warmup_delta.status = delta_status::l1_pref;
+      selected.push_back(warmup_delta);
+    }
+  }
+
+  std::sort(selected.begin(), selected.end(), [](const auto& lhs, const auto& rhs) {
+    if (delta_status_priority(lhs.status) != delta_status_priority(rhs.status))
+      return delta_status_priority(lhs.status) > delta_status_priority(rhs.status);
+    return lhs.coverage > rhs.coverage;
+  });
+
+  if (selected.size() > MAX_SELECTED_DELTAS)
+    selected.resize(MAX_SELECTED_DELTAS);
+  return selected;
+}
+
+bool berti::selected_delta_status(delta_status status)
+{
+  return status == delta_status::l1_pref || status == delta_status::l2_pref;
+}
+
+int berti::delta_status_priority(delta_status status)
+{
+  if (status == delta_status::l1_pref)
+    return 3;
+  if (status == delta_status::l2_pref)
+    return 2;
+  if (status == delta_status::l2_pref_repl)
+    return 1;
+  return 0;
+}
+
+bool berti::target_line(uint64_t line, int64_t delta, uint64_t& target)
+{
+  if (delta < 0) {
+    const auto magnitude = static_cast<uint64_t>(-delta);
+    if (line < magnitude)
+      return false;
+    target = line - magnitude;
+    return true;
+  }
+
+  const auto magnitude = static_cast<uint64_t>(delta);
+  if (line > UINT64_MAX - magnitude)
+    return false;
+
+  target = line + magnitude;
+  return true;
+}
+
 berti::ip_delta_entry* berti::find_delta_entry(uint64_t ip_tag)
 {
   auto found = std::find_if(delta_table.begin(), delta_table.end(), [ip_tag](const auto& entry) { return entry.valid && entry.ip_tag == ip_tag; });
@@ -272,18 +381,8 @@ void berti::limit_selected_deltas(ip_delta_entry& entry)
   }
 
   std::sort(selected.begin(), selected.end(), [](const auto* lhs, const auto* rhs) {
-    const auto priority = [](delta_status status) {
-      if (status == delta_status::l1_pref)
-        return 3;
-      if (status == delta_status::l2_pref)
-        return 2;
-      if (status == delta_status::l2_pref_repl)
-        return 1;
-      return 0;
-    };
-
-    if (priority(lhs->status) != priority(rhs->status))
-      return priority(lhs->status) > priority(rhs->status);
+    if (delta_status_priority(lhs->status) != delta_status_priority(rhs->status))
+      return delta_status_priority(lhs->status) > delta_status_priority(rhs->status);
     return lhs->coverage > rhs->coverage;
   });
 
@@ -419,6 +518,8 @@ uint32_t berti::prefetcher_cache_operate(champsim::address addr, champsim::addre
   if (!cache_hit)
     record_demand_issue(line, ip, cycle);
 
+  issue_prefetches(ip, line, cycle);
+
   return metadata_in;
 }
 
@@ -468,6 +569,8 @@ void berti::prefetcher_final_stats()
   fmt::print("  DEMAND_LATENCY_SAMPLES:        {}\n", stats.demand_latency_samples);
   fmt::print("  DEMAND_LATENCY_CYCLES:         {}\n", stats.demand_latency_cycles);
   fmt::print("  PREFETCH_ISSUE_RECORDS:        {}\n", stats.prefetch_issue_records);
+  fmt::print("  PREFETCH_ISSUED_L1:            {}\n", stats.prefetch_issued_l1);
+  fmt::print("  PREFETCH_ISSUED_L2:            {}\n", stats.prefetch_issued_l2);
   fmt::print("  PREFETCH_LATENCY_SAMPLES:      {}\n", stats.prefetch_latency_samples);
   fmt::print("  PREFETCH_LATENCY_CYCLES:       {}\n", stats.prefetch_latency_cycles);
   fmt::print("  PREFETCHED_LINE_LATENCY_USES:  {}\n", stats.prefetched_line_latency_uses);
