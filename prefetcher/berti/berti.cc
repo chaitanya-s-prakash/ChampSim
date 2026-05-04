@@ -224,7 +224,7 @@ void berti::classify(ip_delta_entry& entry)
     delta.coverage = delta.seen_this_round;
     if (delta.coverage > L1_COVERAGE_THRESHOLD)
       delta.status = delta_status::l1_pref;
-    else if (delta.coverage > L2_REPLACEABLE_COVERAGE_THRESHOLD)
+    else if (delta.coverage >= L2_REPLACEABLE_COVERAGE_THRESHOLD)
       delta.status = delta_status::l2_pref;
     else if (delta.coverage > L2_COVERAGE_THRESHOLD)
       delta.status = delta_status::l2_pref_repl;
