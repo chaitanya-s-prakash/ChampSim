@@ -40,6 +40,7 @@ class berti : public champsim::modules::prefetcher {
   static constexpr uint64_t L2_REPLACEABLE_COVERAGE_THRESHOLD = 8;
   static constexpr double L1_MSHR_OCCUPANCY_THRESHOLD = 0.70;
 
+  static constexpr bool ENABLE_WARMUP_PREFETCHING = true;
   static constexpr uint64_t WARMUP_MIN_SEARCHES = 8;
   static constexpr uint64_t WARMUP_COVERAGE_PERCENT = 80;
 
@@ -90,6 +91,7 @@ class berti : public champsim::modules::prefetcher {
   struct ip_delta_entry {
     bool valid = false;
     uint64_t ip_tag = 0;
+    bool classified = false;
     uint8_t search_count = 0;
     std::array<delta_entry, DELTAS_PER_ENTRY> deltas{};
   };
@@ -115,6 +117,7 @@ class berti : public champsim::modules::prefetcher {
     uint64_t delta_discards = 0;
     uint64_t trained_deltas = 0;
     uint64_t delta_classifications = 0;
+    uint64_t warmup_prefetch_candidates = 0;
   };
 
   std::array<in_flight_entry, IN_FLIGHT_ENTRIES> in_flight{};
@@ -144,7 +147,9 @@ class berti : public champsim::modules::prefetcher {
   [[nodiscard]] std::vector<int64_t> find_timely_deltas(champsim::address ip, uint64_t line, uint64_t latency, uint64_t cycle) const;
   void train(champsim::address ip, uint64_t line, uint64_t latency, uint64_t cycle);
   void issue_prefetches(champsim::address ip, uint64_t line, uint64_t cycle);
-  [[nodiscard]] std::vector<delta_entry> selected_deltas(const ip_delta_entry& entry) const;
+  [[nodiscard]] std::vector<delta_entry> selected_deltas(const ip_delta_entry& entry);
+  void add_warmup_deltas(const ip_delta_entry& entry, std::vector<delta_entry>& selected);
+  [[nodiscard]] static bool warmup_prefetching_ready(const ip_delta_entry& entry);
   [[nodiscard]] static bool selected_delta_status(delta_status status);
   [[nodiscard]] static int delta_status_priority(delta_status status);
   [[nodiscard]] static bool target_line(uint64_t line, int64_t delta, uint64_t& target);

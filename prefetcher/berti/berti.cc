@@ -198,7 +198,7 @@ void berti::issue_prefetches(champsim::address ip, uint64_t line, uint64_t cycle
   }
 }
 
-std::vector<berti::delta_entry> berti::selected_deltas(const ip_delta_entry& entry) const
+std::vector<berti::delta_entry> berti::selected_deltas(const ip_delta_entry& entry)
 {
   std::vector<delta_entry> selected;
   selected.reserve(MAX_SELECTED_DELTAS);
@@ -207,25 +207,7 @@ std::vector<berti::delta_entry> berti::selected_deltas(const ip_delta_entry& ent
       selected.push_back(delta);
   }
 
-  if (entry.search_count >= WARMUP_MIN_SEARCHES) {
-    for (const auto& delta : entry.deltas) {
-      if (!delta.valid)
-        continue;
-
-      const auto already_selected = std::find_if(selected.begin(), selected.end(), [&delta](const auto& candidate) { return candidate.delta == delta.delta; });
-      if (already_selected != selected.end())
-        continue;
-
-      const auto coverage_percent = (100 * static_cast<uint64_t>(delta.seen_this_round)) / entry.search_count;
-      if (coverage_percent < WARMUP_COVERAGE_PERCENT)
-        continue;
-
-      auto warmup_delta = delta;
-      warmup_delta.coverage = delta.seen_this_round;
-      warmup_delta.status = delta_status::l1_pref;
-      selected.push_back(warmup_delta);
-    }
-  }
+  add_warmup_deltas(entry, selected);
 
   std::sort(selected.begin(), selected.end(), [](const auto& lhs, const auto& rhs) {
     if (delta_status_priority(lhs.status) != delta_status_priority(rhs.status))
@@ -236,6 +218,36 @@ std::vector<berti::delta_entry> berti::selected_deltas(const ip_delta_entry& ent
   if (selected.size() > MAX_SELECTED_DELTAS)
     selected.resize(MAX_SELECTED_DELTAS);
   return selected;
+}
+
+void berti::add_warmup_deltas(const ip_delta_entry& entry, std::vector<delta_entry>& selected)
+{
+  if (!warmup_prefetching_ready(entry))
+    return;
+
+  for (const auto& delta : entry.deltas) {
+    if (!delta.valid)
+      continue;
+
+    const auto already_selected = std::find_if(selected.begin(), selected.end(), [&delta](const auto& candidate) { return candidate.delta == delta.delta; });
+    if (already_selected != selected.end())
+      continue;
+
+    const auto coverage_percent = (100 * static_cast<uint64_t>(delta.seen_this_round)) / entry.search_count;
+    if (coverage_percent < WARMUP_COVERAGE_PERCENT)
+      continue;
+
+    auto warmup_delta = delta;
+    warmup_delta.coverage = delta.seen_this_round;
+    warmup_delta.status = delta_status::l1_pref;
+    selected.push_back(warmup_delta);
+    ++stats.warmup_prefetch_candidates;
+  }
+}
+
+bool berti::warmup_prefetching_ready(const ip_delta_entry& entry)
+{
+  return ENABLE_WARMUP_PREFETCHING && !entry.classified && entry.search_count >= WARMUP_MIN_SEARCHES;
 }
 
 bool berti::selected_delta_status(delta_status status)
@@ -368,6 +380,7 @@ void berti::classify(ip_delta_entry& entry)
 
   limit_selected_deltas(entry);
   entry.search_count = 0;
+  entry.classified = true;
   ++stats.delta_classifications;
 }
 
@@ -585,4 +598,5 @@ void berti::prefetcher_final_stats()
   fmt::print("  DELTA_DISCARDS:                {}\n", stats.delta_discards);
   fmt::print("  TRAINED_DELTAS:                {}\n", stats.trained_deltas);
   fmt::print("  DELTA_CLASSIFICATIONS:         {}\n", stats.delta_classifications);
+  fmt::print("  WARMUP_PREFETCH_CANDIDATES:    {}\n", stats.warmup_prefetch_candidates);
 }
