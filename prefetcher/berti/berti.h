@@ -110,6 +110,7 @@ class berti : public champsim::modules::prefetcher {
     uint64_t delta_table_replacements = 0;
     uint64_t delta_inserts = 0;
     uint64_t delta_replacements = 0;
+    uint64_t delta_discards = 0;
     uint64_t trained_deltas = 0;
     uint64_t delta_classifications = 0;
   };
@@ -143,7 +144,9 @@ class berti : public champsim::modules::prefetcher {
 
   [[nodiscard]] ip_delta_entry* find_delta_entry(uint64_t ip_tag);
   [[nodiscard]] ip_delta_entry& get_or_allocate_delta_entry(uint64_t ip_tag);
-  [[nodiscard]] delta_entry& get_or_allocate_delta(ip_delta_entry& entry, int64_t delta);
+  [[nodiscard]] delta_entry* get_or_allocate_delta(ip_delta_entry& entry, int64_t delta);
+  [[nodiscard]] delta_entry* find_delta_replacement(ip_delta_entry& entry);
+  [[nodiscard]] static bool replaceable_delta_status(delta_status status);
   void classify(ip_delta_entry& entry);
   void limit_selected_deltas(ip_delta_entry& entry);
   static void increment_learning_counter(uint8_t& counter);

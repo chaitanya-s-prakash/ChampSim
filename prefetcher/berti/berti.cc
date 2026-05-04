@@ -149,8 +149,13 @@ void berti::train(champsim::address ip, uint64_t line, uint64_t latency, uint64_
   auto& entry = get_or_allocate_delta_entry(delta_table_ip_tag(ip));
   increment_learning_counter(entry.search_count);
   for (auto delta_value : timely) {
-    auto& delta = get_or_allocate_delta(entry, delta_value);
-    increment_learning_counter(delta.seen_this_round);
+    auto* delta = get_or_allocate_delta(entry, delta_value);
+    if (delta == nullptr) {
+      ++stats.delta_discards;
+      continue;
+    }
+
+    increment_learning_counter(delta->seen_this_round);
     ++stats.trained_deltas;
   }
 
@@ -187,11 +192,11 @@ berti::ip_delta_entry& berti::get_or_allocate_delta_entry(uint64_t ip_tag)
   return victim;
 }
 
-berti::delta_entry& berti::get_or_allocate_delta(ip_delta_entry& entry, int64_t delta)
+berti::delta_entry* berti::get_or_allocate_delta(ip_delta_entry& entry, int64_t delta)
 {
   auto found = std::find_if(entry.deltas.begin(), entry.deltas.end(), [delta](const auto& candidate) { return candidate.valid && candidate.delta == delta; });
   if (found != entry.deltas.end())
-    return *found;
+    return &(*found);
 
   auto invalid = std::find_if(entry.deltas.begin(), entry.deltas.end(), [](const auto& candidate) { return !candidate.valid; });
   if (invalid != entry.deltas.end()) {
@@ -199,20 +204,38 @@ berti::delta_entry& berti::get_or_allocate_delta(ip_delta_entry& entry, int64_t 
     invalid->valid = true;
     invalid->delta = delta;
     ++stats.delta_inserts;
-    return *invalid;
+    return &(*invalid);
   }
 
-  auto victim = std::min_element(entry.deltas.begin(), entry.deltas.end(), [](const auto& lhs, const auto& rhs) {
-    if (lhs.seen_this_round != rhs.seen_this_round)
-      return lhs.seen_this_round < rhs.seen_this_round;
-    return lhs.coverage < rhs.coverage;
-  });
+  auto* victim = find_delta_replacement(entry);
+  if (victim == nullptr)
+    return nullptr;
 
   *victim = delta_entry{};
   victim->valid = true;
   victim->delta = delta;
   ++stats.delta_replacements;
-  return *victim;
+  return victim;
+}
+
+berti::delta_entry* berti::find_delta_replacement(ip_delta_entry& entry)
+{
+  auto victim = std::min_element(entry.deltas.begin(), entry.deltas.end(), [](const auto& lhs, const auto& rhs) {
+    if (replaceable_delta_status(lhs.status) != replaceable_delta_status(rhs.status))
+      return replaceable_delta_status(lhs.status);
+    if (!replaceable_delta_status(lhs.status))
+      return false;
+    if (lhs.coverage != rhs.coverage)
+      return lhs.coverage < rhs.coverage;
+    return lhs.status == delta_status::none && rhs.status != delta_status::none;
+  });
+
+  return victim != entry.deltas.end() && replaceable_delta_status(victim->status) ? &(*victim) : nullptr;
+}
+
+bool berti::replaceable_delta_status(delta_status status)
+{
+  return status == delta_status::none || status == delta_status::l2_pref_repl;
 }
 
 void berti::classify(ip_delta_entry& entry)
@@ -456,6 +479,7 @@ void berti::prefetcher_final_stats()
   fmt::print("  DELTA_TABLE_REPLACEMENTS:      {}\n", stats.delta_table_replacements);
   fmt::print("  DELTA_INSERTS:                 {}\n", stats.delta_inserts);
   fmt::print("  DELTA_REPLACEMENTS:            {}\n", stats.delta_replacements);
+  fmt::print("  DELTA_DISCARDS:                {}\n", stats.delta_discards);
   fmt::print("  TRAINED_DELTAS:                {}\n", stats.trained_deltas);
   fmt::print("  DELTA_CLASSIFICATIONS:         {}\n", stats.delta_classifications);
 }
