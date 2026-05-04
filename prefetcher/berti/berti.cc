@@ -29,6 +29,11 @@ uint64_t berti::ip_hash(champsim::address ip)
   return raw_ip ^ (raw_ip >> 16) ^ (raw_ip >> 32);
 }
 
+std::size_t berti::history_set_index(champsim::address ip)
+{
+  return ip.to<uint64_t>() % HISTORY_SETS;
+}
+
 uint64_t berti::history_ip_tag(champsim::address ip)
 {
   const auto mask = (uint64_t{1} << HISTORY_IP_TAG_BITS) - 1;
@@ -39,6 +44,18 @@ uint64_t berti::delta_table_ip_tag(champsim::address ip)
 {
   const auto mask = (uint64_t{1} << DELTA_TABLE_IP_TAG_BITS) - 1;
   return ip_hash(ip) & mask;
+}
+
+uint64_t berti::history_line(uint64_t line)
+{
+  const auto mask = (uint64_t{1} << HISTORY_LINE_BITS) - 1;
+  return line & mask;
+}
+
+uint64_t berti::history_timestamp(uint64_t cycle)
+{
+  const auto mask = (uint64_t{1} << HISTORY_TIMESTAMP_BITS) - 1;
+  return cycle & mask;
 }
 
 uint64_t berti::elapsed_cycles(uint64_t begin, uint64_t end)
@@ -54,6 +71,18 @@ uint64_t berti::stored_latency(uint64_t latency)
 bool berti::is_demand(access_type type)
 {
   return type == access_type::LOAD || type == access_type::RFO;
+}
+
+void berti::add_history(champsim::address ip, uint64_t line, uint64_t cycle)
+{
+  auto& set = history.at(history_set_index(ip));
+  auto& victim = set.entries.at(set.next_victim);
+  if (victim.valid)
+    ++stats.history_replacements;
+
+  victim = history_entry{true, history_ip_tag(ip), history_line(line), history_timestamp(cycle)};
+  set.next_victim = (set.next_victim + 1) % HISTORY_WAYS;
+  ++stats.history_inserts;
 }
 
 berti::in_flight_entry* berti::find_in_flight(uint64_t line)
@@ -170,6 +199,9 @@ uint32_t berti::prefetcher_cache_operate(champsim::address addr, champsim::addre
   if (useful_prefetch)
     consume_prefetch_latency(line);
 
+  if (!cache_hit || useful_prefetch)
+    add_history(ip, line, cycle);
+
   if (!cache_hit)
     record_demand_issue(line, ip, cycle);
 
@@ -221,4 +253,6 @@ void berti::prefetcher_final_stats()
   fmt::print("  PREFETCH_LATENCY_SAMPLES:      {}\n", stats.prefetch_latency_samples);
   fmt::print("  PREFETCH_LATENCY_CYCLES:       {}\n", stats.prefetch_latency_cycles);
   fmt::print("  PREFETCHED_LINE_LATENCY_USES:  {}\n", stats.prefetched_line_latency_uses);
+  fmt::print("  HISTORY_INSERTS:               {}\n", stats.history_inserts);
+  fmt::print("  HISTORY_REPLACEMENTS:          {}\n", stats.history_replacements);
 }
