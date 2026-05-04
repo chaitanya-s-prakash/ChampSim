@@ -70,6 +70,12 @@ void PagePlacementTable::migrate(uint64_t cxl_logical_ppage, uint64_t ddr_logica
   cxl_it->second.generation = 0;
 }
 
+bool PagePlacementTable::is_in_cooldown(uint64_t logical_ppage) const
+{
+  auto it = table_.find(logical_ppage);
+  return it != table_.end() && it->second.cooldown_epochs > 0;
+}
+
 void PagePlacementTable::set_cooldown(uint64_t logical_ppage, uint32_t epochs)
 {
   auto it = table_.find(logical_ppage);

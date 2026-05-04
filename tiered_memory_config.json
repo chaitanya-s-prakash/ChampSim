@@ -220,7 +220,7 @@
 
     "hwt_cms_width": 8192,
     "hwt_cms_depth": 4,
-    "hwt_top_k": 5,
+    "hwt_top_k": 40,
     "hwt_density_threshold": 8,
 
     "bw_density_ratio_threshold": 1.0,

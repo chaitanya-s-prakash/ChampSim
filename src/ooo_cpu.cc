@@ -26,6 +26,7 @@
 
 #include "cache.h"
 #include "champsim.h"
+#include "m5_manager.h"
 #include "deadlock.h"
 #include "instruction.h"
 #include "util/span.h"
@@ -67,6 +68,10 @@ long O3_CPU::operate()
     last_heartbeat_instr = num_retired;
     last_heartbeat_time = current_time;
   }
+
+  // M5 migration epoch trigger — fires when enough instructions have retired.
+  if (m5::g_m5_manager)
+    m5::g_m5_manager->maybe_trigger_epoch(static_cast<uint64_t>(num_retired));
 
   return progress;
 }

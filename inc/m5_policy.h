@@ -52,7 +52,7 @@ struct config {
   /* -- HWT (Hot Word / Cache-Line Tracker) -------------------------------- */
   std::size_t hwt_cms_width         = 8192;  // counters per CMS row
   std::size_t hwt_cms_depth         = 4;     // CMS rows
-  std::size_t hwt_top_k             = 5;   // max hot cache-line candidates per epoch
+  std::size_t hwt_top_k             = 40;  // max hot cache-line candidates per epoch (= hpt_top_k × hwt_density_threshold)
   std::size_t hwt_density_threshold = 8;     // min hot lines in a page to qualify for migration
 
   /* -- Elector / bandwidth-density trigger -------------------------------- */

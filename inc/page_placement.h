@@ -88,6 +88,9 @@ public:
   // Returns UINT64_MAX if no valid victim exists.
   uint64_t get_ddr_victim(uint8_t max_generation) const;
 
+  // Returns true if the page exists and its cooldown_epochs > 0.
+  bool is_in_cooldown(uint64_t logical_ppage) const;
+
   uint64_t ddr_pages_used()      const { return ddr_pages_used_; }
   uint64_t cxl_pages_used()      const { return cxl_pages_used_; }
   uint64_t ddr_capacity_pages()  const { return ddr_capacity_pages_; }
