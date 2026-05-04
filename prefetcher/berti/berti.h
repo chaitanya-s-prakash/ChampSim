@@ -79,6 +79,21 @@ class berti : public champsim::modules::prefetcher {
     std::size_t next_victim = 0;
   };
 
+  struct delta_entry {
+    bool valid = false;
+    int64_t delta = 0;
+    uint8_t seen_this_round = 0;
+    uint8_t coverage = 0;
+    delta_status status = delta_status::none;
+  };
+
+  struct ip_delta_entry {
+    bool valid = false;
+    uint64_t ip_tag = 0;
+    uint8_t search_count = 0;
+    std::array<delta_entry, DELTAS_PER_ENTRY> deltas{};
+  };
+
   struct stats_type {
     uint64_t demand_issue_records = 0;
     uint64_t demand_latency_samples = 0;
@@ -91,13 +106,20 @@ class berti : public champsim::modules::prefetcher {
     uint64_t history_replacements = 0;
     uint64_t history_searches = 0;
     uint64_t timely_deltas = 0;
+    uint64_t delta_table_inserts = 0;
+    uint64_t delta_table_replacements = 0;
+    uint64_t delta_inserts = 0;
+    uint64_t delta_replacements = 0;
+    uint64_t trained_deltas = 0;
   };
 
   std::array<in_flight_entry, IN_FLIGHT_ENTRIES> in_flight{};
   std::array<prefetch_latency_entry, PREFETCH_LATENCY_ENTRIES> prefetch_latencies{};
   std::array<history_set, HISTORY_SETS> history{};
+  std::array<ip_delta_entry, DELTA_TABLE_ENTRIES> delta_table{};
   stats_type stats{};
   std::size_t next_in_flight_victim = 0;
+  std::size_t next_delta_victim = 0;
 
   [[nodiscard]] uint64_t current_cycle() const;
   [[nodiscard]] static uint64_t line_number(champsim::address addr);
@@ -116,7 +138,12 @@ class berti : public champsim::modules::prefetcher {
 
   void add_history(champsim::address ip, uint64_t line, uint64_t cycle);
   [[nodiscard]] std::vector<int64_t> find_timely_deltas(champsim::address ip, uint64_t line, uint64_t latency, uint64_t cycle) const;
-  void record_timely_delta_search(champsim::address ip, uint64_t line, uint64_t latency, uint64_t cycle);
+  void train(champsim::address ip, uint64_t line, uint64_t latency, uint64_t cycle);
+
+  [[nodiscard]] ip_delta_entry* find_delta_entry(uint64_t ip_tag);
+  [[nodiscard]] ip_delta_entry& get_or_allocate_delta_entry(uint64_t ip_tag);
+  [[nodiscard]] delta_entry& get_or_allocate_delta(ip_delta_entry& entry, int64_t delta);
+  static void increment_learning_counter(uint8_t& counter);
 
   [[nodiscard]] in_flight_entry* find_in_flight(uint64_t line);
   [[nodiscard]] in_flight_entry& get_or_allocate_in_flight(uint64_t line);

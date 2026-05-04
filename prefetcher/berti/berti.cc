@@ -137,7 +137,7 @@ std::vector<int64_t> berti::find_timely_deltas(champsim::address ip, uint64_t li
   return deltas;
 }
 
-void berti::record_timely_delta_search(champsim::address ip, uint64_t line, uint64_t latency, uint64_t cycle)
+void berti::train(champsim::address ip, uint64_t line, uint64_t latency, uint64_t cycle)
 {
   if (latency == 0 || latency > cycle)
     return;
@@ -145,6 +145,77 @@ void berti::record_timely_delta_search(champsim::address ip, uint64_t line, uint
   const auto timely = find_timely_deltas(ip, line, latency, cycle);
   ++stats.history_searches;
   stats.timely_deltas += timely.size();
+
+  auto& entry = get_or_allocate_delta_entry(delta_table_ip_tag(ip));
+  increment_learning_counter(entry.search_count);
+  for (auto delta_value : timely) {
+    auto& delta = get_or_allocate_delta(entry, delta_value);
+    increment_learning_counter(delta.seen_this_round);
+    ++stats.trained_deltas;
+  }
+}
+
+berti::ip_delta_entry* berti::find_delta_entry(uint64_t ip_tag)
+{
+  auto found = std::find_if(delta_table.begin(), delta_table.end(), [ip_tag](const auto& entry) { return entry.valid && entry.ip_tag == ip_tag; });
+  return found == delta_table.end() ? nullptr : &(*found);
+}
+
+berti::ip_delta_entry& berti::get_or_allocate_delta_entry(uint64_t ip_tag)
+{
+  if (auto* existing = find_delta_entry(ip_tag); existing != nullptr)
+    return *existing;
+
+  auto invalid = std::find_if(delta_table.begin(), delta_table.end(), [](const auto& entry) { return !entry.valid; });
+  if (invalid != delta_table.end()) {
+    *invalid = ip_delta_entry{};
+    invalid->valid = true;
+    invalid->ip_tag = ip_tag;
+    ++stats.delta_table_inserts;
+    return *invalid;
+  }
+
+  auto& victim = delta_table.at(next_delta_victim);
+  next_delta_victim = (next_delta_victim + 1) % DELTA_TABLE_ENTRIES;
+  victim = ip_delta_entry{};
+  victim.valid = true;
+  victim.ip_tag = ip_tag;
+  ++stats.delta_table_replacements;
+  return victim;
+}
+
+berti::delta_entry& berti::get_or_allocate_delta(ip_delta_entry& entry, int64_t delta)
+{
+  auto found = std::find_if(entry.deltas.begin(), entry.deltas.end(), [delta](const auto& candidate) { return candidate.valid && candidate.delta == delta; });
+  if (found != entry.deltas.end())
+    return *found;
+
+  auto invalid = std::find_if(entry.deltas.begin(), entry.deltas.end(), [](const auto& candidate) { return !candidate.valid; });
+  if (invalid != entry.deltas.end()) {
+    *invalid = delta_entry{};
+    invalid->valid = true;
+    invalid->delta = delta;
+    ++stats.delta_inserts;
+    return *invalid;
+  }
+
+  auto victim = std::min_element(entry.deltas.begin(), entry.deltas.end(), [](const auto& lhs, const auto& rhs) {
+    if (lhs.seen_this_round != rhs.seen_this_round)
+      return lhs.seen_this_round < rhs.seen_this_round;
+    return lhs.coverage < rhs.coverage;
+  });
+
+  *victim = delta_entry{};
+  victim->valid = true;
+  victim->delta = delta;
+  ++stats.delta_replacements;
+  return *victim;
+}
+
+void berti::increment_learning_counter(uint8_t& counter)
+{
+  if (counter < LEARNING_ROUNDS)
+    ++counter;
 }
 
 berti::in_flight_entry* berti::find_in_flight(uint64_t line)
@@ -260,7 +331,7 @@ uint32_t berti::prefetcher_cache_operate(champsim::address addr, champsim::addre
 
   if (useful_prefetch) {
     const auto latency = consume_prefetch_latency(line);
-    record_timely_delta_search(ip, line, latency, cycle);
+    train(ip, line, latency, cycle);
   }
 
   if (!cache_hit || useful_prefetch)
@@ -290,7 +361,7 @@ uint32_t berti::prefetcher_cache_fill(champsim::address addr, long set, long way
         ++stats.demand_latency_samples;
         stats.demand_latency_cycles += latency;
       }
-      record_timely_delta_search(entry->demand_ip, line, latency, cycle);
+      train(entry->demand_ip, line, latency, cycle);
       remove_demand_issue(*entry);
     }
 
@@ -325,4 +396,9 @@ void berti::prefetcher_final_stats()
   fmt::print("  HISTORY_REPLACEMENTS:          {}\n", stats.history_replacements);
   fmt::print("  HISTORY_SEARCHES:              {}\n", stats.history_searches);
   fmt::print("  TIMELY_DELTAS:                 {}\n", stats.timely_deltas);
+  fmt::print("  DELTA_TABLE_INSERTS:           {}\n", stats.delta_table_inserts);
+  fmt::print("  DELTA_TABLE_REPLACEMENTS:      {}\n", stats.delta_table_replacements);
+  fmt::print("  DELTA_INSERTS:                 {}\n", stats.delta_inserts);
+  fmt::print("  DELTA_REPLACEMENTS:            {}\n", stats.delta_replacements);
+  fmt::print("  TRAINED_DELTAS:                {}\n", stats.trained_deltas);
 }
