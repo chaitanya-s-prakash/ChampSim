@@ -97,19 +97,24 @@ class berti : public champsim::modules::prefetcher {
   };
 
   struct stats_type {
+    uint64_t accesses = 0;
     uint64_t demand_issue_records = 0;
     uint64_t demand_latency_samples = 0;
     uint64_t demand_latency_cycles = 0;
-    uint64_t prefetch_issue_records = 0;
+    uint64_t prefetches_issued = 0;
     uint64_t prefetch_issued_l1 = 0;
     uint64_t prefetch_issued_l2 = 0;
     uint64_t prefetch_latency_samples = 0;
     uint64_t prefetch_latency_cycles = 0;
     uint64_t prefetched_line_latency_uses = 0;
+    uint64_t useful_prefetches = 0;
+    uint64_t late_prefetches = 0;
     uint64_t history_inserts = 0;
     uint64_t history_replacements = 0;
     uint64_t history_searches = 0;
     uint64_t timely_deltas = 0;
+    uint64_t delta_table_hits = 0;
+    uint64_t delta_table_misses = 0;
     uint64_t delta_table_inserts = 0;
     uint64_t delta_table_replacements = 0;
     uint64_t delta_inserts = 0;

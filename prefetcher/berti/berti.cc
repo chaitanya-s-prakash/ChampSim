@@ -166,8 +166,12 @@ void berti::train(champsim::address ip, uint64_t line, uint64_t latency, uint64_
 void berti::issue_prefetches(champsim::address ip, uint64_t line, uint64_t cycle)
 {
   auto* entry = find_delta_entry(delta_table_ip_tag(ip));
-  if (entry == nullptr)
+  if (entry == nullptr) {
+    ++stats.delta_table_misses;
     return;
+  }
+
+  ++stats.delta_table_hits;
 
   const auto candidates = selected_deltas(*entry);
   const auto l1_mshr_available = intern_->get_mshr_occupancy_ratio() < L1_MSHR_OCCUPANCY_THRESHOLD;
@@ -442,6 +446,9 @@ void berti::record_demand_issue(uint64_t line, champsim::address ip, uint64_t cy
   if (entry.demand_valid)
     return;
 
+  if (entry.prefetch_valid)
+    ++stats.late_prefetches;
+
   entry.demand_valid = true;
   entry.demand_ip = ip;
   entry.demand_cycle = cycle;
@@ -453,7 +460,7 @@ void berti::record_prefetch_issue(uint64_t line, uint64_t cycle)
   auto& entry = get_or_allocate_in_flight(line);
   entry.prefetch_valid = true;
   entry.prefetch_cycle = cycle;
-  ++stats.prefetch_issue_records;
+  ++stats.prefetches_issued;
 }
 
 void berti::remove_demand_issue(in_flight_entry& entry)
@@ -519,8 +526,10 @@ uint32_t berti::prefetcher_cache_operate(champsim::address addr, champsim::addre
 
   const auto cycle = current_cycle();
   const auto line = line_number(addr);
+  ++stats.accesses;
 
   if (useful_prefetch) {
+    ++stats.useful_prefetches;
     const auto latency = consume_prefetch_latency(line);
     train(ip, line, latency, cycle);
   }
@@ -578,19 +587,24 @@ uint32_t berti::prefetcher_cache_fill(champsim::address addr, long set, long way
 void berti::prefetcher_final_stats()
 {
   fmt::print("Berti prefetcher statistics\n");
+  fmt::print("  ACCESSES:                      {}\n", stats.accesses);
   fmt::print("  DEMAND_ISSUE_RECORDS:          {}\n", stats.demand_issue_records);
   fmt::print("  DEMAND_LATENCY_SAMPLES:        {}\n", stats.demand_latency_samples);
   fmt::print("  DEMAND_LATENCY_CYCLES:         {}\n", stats.demand_latency_cycles);
-  fmt::print("  PREFETCH_ISSUE_RECORDS:        {}\n", stats.prefetch_issue_records);
+  fmt::print("  PREFETCHES_ISSUED:             {}\n", stats.prefetches_issued);
   fmt::print("  PREFETCH_ISSUED_L1:            {}\n", stats.prefetch_issued_l1);
   fmt::print("  PREFETCH_ISSUED_L2:            {}\n", stats.prefetch_issued_l2);
   fmt::print("  PREFETCH_LATENCY_SAMPLES:      {}\n", stats.prefetch_latency_samples);
   fmt::print("  PREFETCH_LATENCY_CYCLES:       {}\n", stats.prefetch_latency_cycles);
   fmt::print("  PREFETCHED_LINE_LATENCY_USES:  {}\n", stats.prefetched_line_latency_uses);
+  fmt::print("  USEFUL_PREFETCHES:             {}\n", stats.useful_prefetches);
+  fmt::print("  LATE_PREFETCHES:               {}\n", stats.late_prefetches);
   fmt::print("  HISTORY_INSERTS:               {}\n", stats.history_inserts);
   fmt::print("  HISTORY_REPLACEMENTS:          {}\n", stats.history_replacements);
   fmt::print("  HISTORY_SEARCHES:              {}\n", stats.history_searches);
   fmt::print("  TIMELY_DELTAS:                 {}\n", stats.timely_deltas);
+  fmt::print("  DELTA_TABLE_HITS:              {}\n", stats.delta_table_hits);
+  fmt::print("  DELTA_TABLE_MISSES:            {}\n", stats.delta_table_misses);
   fmt::print("  DELTA_TABLE_INSERTS:           {}\n", stats.delta_table_inserts);
   fmt::print("  DELTA_TABLE_REPLACEMENTS:      {}\n", stats.delta_table_replacements);
   fmt::print("  DELTA_INSERTS:                 {}\n", stats.delta_inserts);
