@@ -111,6 +111,7 @@ class berti : public champsim::modules::prefetcher {
     uint64_t delta_inserts = 0;
     uint64_t delta_replacements = 0;
     uint64_t trained_deltas = 0;
+    uint64_t delta_classifications = 0;
   };
 
   std::array<in_flight_entry, IN_FLIGHT_ENTRIES> in_flight{};
@@ -143,6 +144,8 @@ class berti : public champsim::modules::prefetcher {
   [[nodiscard]] ip_delta_entry* find_delta_entry(uint64_t ip_tag);
   [[nodiscard]] ip_delta_entry& get_or_allocate_delta_entry(uint64_t ip_tag);
   [[nodiscard]] delta_entry& get_or_allocate_delta(ip_delta_entry& entry, int64_t delta);
+  void classify(ip_delta_entry& entry);
+  void limit_selected_deltas(ip_delta_entry& entry);
   static void increment_learning_counter(uint8_t& counter);
 
   [[nodiscard]] in_flight_entry* find_in_flight(uint64_t line);

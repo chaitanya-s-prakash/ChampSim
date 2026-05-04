@@ -153,6 +153,9 @@ void berti::train(champsim::address ip, uint64_t line, uint64_t latency, uint64_
     increment_learning_counter(delta.seen_this_round);
     ++stats.trained_deltas;
   }
+
+  if (entry.search_count >= LEARNING_ROUNDS)
+    classify(entry);
 }
 
 berti::ip_delta_entry* berti::find_delta_entry(uint64_t ip_tag)
@@ -210,6 +213,59 @@ berti::delta_entry& berti::get_or_allocate_delta(ip_delta_entry& entry, int64_t 
   victim->delta = delta;
   ++stats.delta_replacements;
   return *victim;
+}
+
+void berti::classify(ip_delta_entry& entry)
+{
+  for (auto& delta : entry.deltas) {
+    if (!delta.valid)
+      continue;
+
+    delta.coverage = delta.seen_this_round;
+    if (delta.coverage > L1_COVERAGE_THRESHOLD)
+      delta.status = delta_status::l1_pref;
+    else if (delta.coverage > L2_REPLACEABLE_COVERAGE_THRESHOLD)
+      delta.status = delta_status::l2_pref;
+    else if (delta.coverage > L2_COVERAGE_THRESHOLD)
+      delta.status = delta_status::l2_pref_repl;
+    else
+      delta.status = delta_status::none;
+
+    delta.seen_this_round = 0;
+  }
+
+  limit_selected_deltas(entry);
+  entry.search_count = 0;
+  ++stats.delta_classifications;
+}
+
+void berti::limit_selected_deltas(ip_delta_entry& entry)
+{
+  std::vector<delta_entry*> selected;
+  selected.reserve(DELTAS_PER_ENTRY);
+  for (auto& delta : entry.deltas) {
+    if (delta.valid && delta.status != delta_status::none)
+      selected.push_back(&delta);
+  }
+
+  std::sort(selected.begin(), selected.end(), [](const auto* lhs, const auto* rhs) {
+    const auto priority = [](delta_status status) {
+      if (status == delta_status::l1_pref)
+        return 3;
+      if (status == delta_status::l2_pref)
+        return 2;
+      if (status == delta_status::l2_pref_repl)
+        return 1;
+      return 0;
+    };
+
+    if (priority(lhs->status) != priority(rhs->status))
+      return priority(lhs->status) > priority(rhs->status);
+    return lhs->coverage > rhs->coverage;
+  });
+
+  for (std::size_t index = MAX_SELECTED_DELTAS; index < selected.size(); ++index)
+    selected.at(index)->status = delta_status::none;
 }
 
 void berti::increment_learning_counter(uint8_t& counter)
@@ -401,4 +457,5 @@ void berti::prefetcher_final_stats()
   fmt::print("  DELTA_INSERTS:                 {}\n", stats.delta_inserts);
   fmt::print("  DELTA_REPLACEMENTS:            {}\n", stats.delta_replacements);
   fmt::print("  TRAINED_DELTAS:                {}\n", stats.trained_deltas);
+  fmt::print("  DELTA_CLASSIFICATIONS:         {}\n", stats.delta_classifications);
 }
