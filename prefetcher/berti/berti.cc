@@ -1,5 +1,6 @@
 #include "berti.h"
 
+#include <algorithm>
 #include <fmt/core.h>
 
 #include "cache.h"
@@ -40,6 +41,118 @@ uint64_t berti::delta_table_ip_tag(champsim::address ip)
   return ip_hash(ip) & mask;
 }
 
+uint64_t berti::elapsed_cycles(uint64_t begin, uint64_t end)
+{
+  return end >= begin ? end - begin : 0;
+}
+
+uint64_t berti::stored_latency(uint64_t latency)
+{
+  return latency <= MAX_STORED_LATENCY ? latency : 0;
+}
+
+bool berti::is_demand(access_type type)
+{
+  return type == access_type::LOAD || type == access_type::RFO;
+}
+
+berti::in_flight_entry* berti::find_in_flight(uint64_t line)
+{
+  auto found = std::find_if(in_flight.begin(), in_flight.end(), [line](const auto& entry) { return entry.valid && entry.line == line; });
+  return found == in_flight.end() ? nullptr : &(*found);
+}
+
+berti::in_flight_entry& berti::get_or_allocate_in_flight(uint64_t line)
+{
+  if (auto* existing = find_in_flight(line); existing != nullptr)
+    return *existing;
+
+  auto invalid = std::find_if(in_flight.begin(), in_flight.end(), [](const auto& entry) { return !entry.valid; });
+  if (invalid != in_flight.end()) {
+    *invalid = in_flight_entry{};
+    invalid->valid = true;
+    invalid->line = line;
+    return *invalid;
+  }
+
+  auto& victim = in_flight.at(next_in_flight_victim);
+  next_in_flight_victim = (next_in_flight_victim + 1) % IN_FLIGHT_ENTRIES;
+  victim = in_flight_entry{};
+  victim.valid = true;
+  victim.line = line;
+  return victim;
+}
+
+void berti::record_demand_issue(uint64_t line, champsim::address ip, uint64_t cycle)
+{
+  auto& entry = get_or_allocate_in_flight(line);
+  if (entry.demand_valid)
+    return;
+
+  entry.demand_valid = true;
+  entry.demand_ip = ip;
+  entry.demand_cycle = cycle;
+  ++stats.demand_issue_records;
+}
+
+void berti::record_prefetch_issue(uint64_t line, uint64_t cycle)
+{
+  auto& entry = get_or_allocate_in_flight(line);
+  entry.prefetch_valid = true;
+  entry.prefetch_cycle = cycle;
+  ++stats.prefetch_issue_records;
+}
+
+void berti::remove_demand_issue(in_flight_entry& entry)
+{
+  entry.demand_valid = false;
+  if (!entry.prefetch_valid)
+    entry.valid = false;
+}
+
+void berti::remove_prefetch_issue(in_flight_entry& entry)
+{
+  entry.prefetch_valid = false;
+  if (!entry.demand_valid)
+    entry.valid = false;
+}
+
+std::size_t berti::prefetch_latency_index(uint64_t line)
+{
+  return line % PREFETCH_LATENCY_ENTRIES;
+}
+
+void berti::remember_prefetch_latency(uint64_t line, uint64_t latency)
+{
+  latency = stored_latency(latency);
+  if (latency == 0) {
+    forget_prefetch_latency(line);
+    return;
+  }
+
+  prefetch_latencies.at(prefetch_latency_index(line)) = prefetch_latency_entry{true, line, latency};
+}
+
+void berti::forget_prefetch_latency(uint64_t line)
+{
+  auto& entry = prefetch_latencies.at(prefetch_latency_index(line));
+  if (entry.valid && entry.line == line)
+    entry.valid = false;
+}
+
+uint64_t berti::consume_prefetch_latency(uint64_t line)
+{
+  auto& entry = prefetch_latencies.at(prefetch_latency_index(line));
+  if (!entry.valid || entry.line != line)
+    return 0;
+
+  const auto latency = stored_latency(entry.latency);
+  entry.valid = false;
+  if (latency > 0)
+    ++stats.prefetched_line_latency_uses;
+  return latency;
+}
+
 void berti::prefetcher_initialize()
 {
   fmt::print("Berti prefetcher initialized\n");
@@ -48,15 +161,64 @@ void berti::prefetcher_initialize()
 uint32_t berti::prefetcher_cache_operate(champsim::address addr, champsim::address ip, uint8_t cache_hit, bool useful_prefetch, access_type type,
                                          uint32_t metadata_in)
 {
+  if (!is_demand(type))
+    return metadata_in;
+
+  const auto cycle = current_cycle();
+  const auto line = line_number(addr);
+
+  if (useful_prefetch)
+    consume_prefetch_latency(line);
+
+  if (!cache_hit)
+    record_demand_issue(line, ip, cycle);
+
   return metadata_in;
 }
 
 uint32_t berti::prefetcher_cache_fill(champsim::address addr, long set, long way, uint8_t prefetch, champsim::address evicted_addr, uint32_t metadata_in)
 {
+  const auto cycle = current_cycle();
+  const auto line = line_number(addr);
+  auto* entry = find_in_flight(line);
+
+  if (evicted_addr.to<uint64_t>() != 0)
+    forget_prefetch_latency(line_number(evicted_addr));
+
+  if (entry != nullptr) {
+    if (entry->demand_valid) {
+      const auto latency = stored_latency(elapsed_cycles(entry->demand_cycle, cycle));
+      if (latency > 0) {
+        ++stats.demand_latency_samples;
+        stats.demand_latency_cycles += latency;
+      }
+      remove_demand_issue(*entry);
+    }
+
+    if (prefetch && entry->prefetch_valid) {
+      const auto latency = stored_latency(elapsed_cycles(entry->prefetch_cycle, cycle));
+      if (latency > 0) {
+        ++stats.prefetch_latency_samples;
+        stats.prefetch_latency_cycles += latency;
+      }
+      remember_prefetch_latency(line, latency);
+      remove_prefetch_issue(*entry);
+    } else if (!prefetch && entry->prefetch_valid) {
+      remove_prefetch_issue(*entry);
+    }
+  }
+
   return metadata_in;
 }
 
 void berti::prefetcher_final_stats()
 {
   fmt::print("Berti prefetcher statistics\n");
+  fmt::print("  DEMAND_ISSUE_RECORDS:          {}\n", stats.demand_issue_records);
+  fmt::print("  DEMAND_LATENCY_SAMPLES:        {}\n", stats.demand_latency_samples);
+  fmt::print("  DEMAND_LATENCY_CYCLES:         {}\n", stats.demand_latency_cycles);
+  fmt::print("  PREFETCH_ISSUE_RECORDS:        {}\n", stats.prefetch_issue_records);
+  fmt::print("  PREFETCH_LATENCY_SAMPLES:      {}\n", stats.prefetch_latency_samples);
+  fmt::print("  PREFETCH_LATENCY_CYCLES:       {}\n", stats.prefetch_latency_cycles);
+  fmt::print("  PREFETCHED_LINE_LATENCY_USES:  {}\n", stats.prefetched_line_latency_uses);
 }
