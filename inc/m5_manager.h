@@ -32,7 +32,8 @@ class M5Manager
   MEMORY_CONTROLLER& dram_;
   const config       cfg_;
 
-  MigrationStats stats_{};
+  MigrationStats stats_{};           // cumulative since simulation start (incl. warmup)
+  MigrationStats roi_snapshot_{};   // snapshot taken at warmup→ROI transition
   uint64_t       last_epoch_instr_ = 0;
   uint64_t       epoch_count_      = 0;  // total epochs run so far (for aging interval)
 
@@ -56,7 +57,14 @@ public:
   // Fires the full pipeline when enough instructions have elapsed.
   void maybe_trigger_epoch(uint64_t num_retired);
 
-  const MigrationStats& migration_stats() const { return stats_; }
+  // Call at the warmup → ROI transition to mark the start of the measurement
+  // window.  roi_migration_stats() then returns only post-snapshot activity.
+  void begin_roi();
+
+  // Returns migration stats accumulated since the last begin_roi() call.
+  MigrationStats roi_migration_stats() const;
+
+  const MigrationStats& sim_migration_stats() const { return stats_; }
 };
 
 // Global singleton set in champsim::main() before any phase runs.

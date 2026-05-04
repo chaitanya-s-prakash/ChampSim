@@ -24,6 +24,7 @@
 #include <fmt/core.h>
 #include <fmt/ostream.h>
 
+#include "m5_migration.h"
 #include "stats_printer.h"
 #include "stats_utils.h"
 
@@ -209,6 +210,28 @@ std::vector<std::string> champsim::plain_printer::format(vmem_stats stats)
   return lines;
 }
 
+std::vector<std::string> champsim::plain_printer::format(m5::MigrationStats stats)
+{
+  std::vector<std::string> lines{};
+  lines.emplace_back("M5 Migration Statistics (ROI)");
+
+  uint64_t epochs_with_migration = stats.total_epochs_fired - stats.total_epochs_skipped;
+  lines.push_back(fmt::format("  EPOCHS FIRED:               {:10}", stats.total_epochs_fired));
+  lines.push_back(fmt::format("  EPOCHS WITH MIGRATION:      {:10}", epochs_with_migration));
+  lines.push_back(fmt::format("  EPOCHS SKIPPED (elector):   {:10}", stats.total_epochs_skipped));
+  lines.emplace_back("");
+  lines.push_back(fmt::format("  TOTAL PROMOTIONS (CXL→DDR): {:10}", stats.total_promotions));
+  lines.push_back(fmt::format("  TOTAL DEMOTIONS  (DDR→CXL): {:10}", stats.total_demotions));
+  lines.push_back(fmt::format("  TOTAL MIGRATION COST:       {:10} cycles", stats.total_migration_cost_cycles));
+  lines.emplace_back("");
+  lines.push_back(fmt::format("  SKIPPED density filter:     {:10}", stats.skipped_density_filter));
+  lines.push_back(fmt::format("  SKIPPED bw-density trigger: {:10}", stats.skipped_bw_density_trigger));
+  lines.push_back(fmt::format("  SKIPPED cooldown:           {:10}", stats.skipped_cooldown));
+  lines.push_back(fmt::format("  SKIPPED no DDR victim:      {:10}", stats.skipped_no_victim));
+
+  return lines;
+}
+
 void champsim::plain_printer::print(champsim::phase_stats& stats)
 {
   auto lines = format(stats);
@@ -334,6 +357,10 @@ std::vector<std::string> champsim::plain_printer::format(champsim::phase_stats& 
   lines.emplace_back("Virtual Memory Statistics");
   auto roi_vmem_lines = format(stats.roi_vmem_stats);
   std::move(std::begin(roi_vmem_lines), std::end(roi_vmem_lines), std::back_inserter(lines));
+
+  lines.emplace_back("");
+  auto m5_lines = format(stats.m5_migration_stats);
+  std::move(std::begin(m5_lines), std::end(m5_lines), std::back_inserter(lines));
 
   return lines;
 }

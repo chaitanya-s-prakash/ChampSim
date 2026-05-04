@@ -20,6 +20,7 @@
 
 #include "cache.h"
 #include "dram_controller.h"
+#include "m5_migration.h"
 #include "ooo_cpu.h"
 #include "phase_info.h"
 #include "vmem_stats.h"
@@ -39,6 +40,7 @@ public:
   static std::vector<std::string> format(CACHE::stats_type stats);
   static std::vector<std::string> format(DRAM_CHANNEL::stats_type stats);
   static std::vector<std::string> format(vmem_stats stats);
+  static std::vector<std::string> format(m5::MigrationStats stats);
   static std::vector<std::string> format(phase_stats& stats);
 };
 

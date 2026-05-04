@@ -202,8 +202,15 @@ std::vector<phase_stats> main(environment& env, std::vector<phase_info>& phases,
   champsim::chrono::clock global_clock;
   std::vector<phase_stats> results;
   for (auto phase : phases) {
+    // Snapshot migration stats at the warmup→ROI boundary so that
+    // roi_migration_stats() reports only the simulation phase.
+    if (!phase.is_warmup)
+      m5_manager.begin_roi();
+
     auto stats = do_phase(phase, env, traces, global_clock);
+
     if (!phase.is_warmup) {
+      stats.m5_migration_stats = m5_manager.roi_migration_stats();
       results.push_back(stats);
     }
   }

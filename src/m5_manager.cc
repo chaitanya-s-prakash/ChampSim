@@ -19,6 +19,28 @@ M5Manager::M5Manager(MEMORY_CONTROLLER& dram, const config& cfg)
 {
 }
 
+void M5Manager::begin_roi()
+{
+  // Snapshot current cumulative stats.  roi_migration_stats() returns the
+  // delta (sim_stats - snapshot), matching the DRAM channel roi_stats pattern.
+  roi_snapshot_ = stats_;
+}
+
+MigrationStats M5Manager::roi_migration_stats() const
+{
+  MigrationStats roi;
+  roi.total_epochs_fired          = stats_.total_epochs_fired          - roi_snapshot_.total_epochs_fired;
+  roi.total_epochs_skipped        = stats_.total_epochs_skipped        - roi_snapshot_.total_epochs_skipped;
+  roi.total_promotions            = stats_.total_promotions            - roi_snapshot_.total_promotions;
+  roi.total_demotions             = stats_.total_demotions             - roi_snapshot_.total_demotions;
+  roi.total_migration_cost_cycles = stats_.total_migration_cost_cycles - roi_snapshot_.total_migration_cost_cycles;
+  roi.skipped_density_filter      = stats_.skipped_density_filter      - roi_snapshot_.skipped_density_filter;
+  roi.skipped_bw_density_trigger  = stats_.skipped_bw_density_trigger  - roi_snapshot_.skipped_bw_density_trigger;
+  roi.skipped_cooldown            = stats_.skipped_cooldown            - roi_snapshot_.skipped_cooldown;
+  roi.skipped_no_victim           = stats_.skipped_no_victim           - roi_snapshot_.skipped_no_victim;
+  return roi;
+}
+
 // ---------------------------------------------------------------------------
 // Nominator: filter HPT top-K by tier, cooldown, and HWT density.
 // ---------------------------------------------------------------------------
