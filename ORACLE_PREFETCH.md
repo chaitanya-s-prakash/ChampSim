@@ -226,6 +226,37 @@ scripts/run_tiered_logs.sh          # → logs/tiered_baseline/
 
 ---
 
+## Validation Experiment — Near-Zero CXL Latency
+
+To confirm that the oracle's low IPC impact is a **timing constraint** (not a correctness bug), a second run was performed with CXL timing parameters reduced to the minimum possible (`tCAS=1, tRCD=1, tRP=1, tRAS=1`), dropping average off-chip latency from ~238 cycles to ~50 cycles for lbm and ~12 cycles for omnetpp.
+
+Config: `oracle_tiered_fastcxl_config.json`. Logs: `logs/oracle_fastcxl/`.
+
+### Results
+
+| Metric | LBM normal CXL | LBM fast CXL | omnetpp normal CXL | omnetpp fast CXL |
+|--------|---------------|-------------|-------------------|-----------------|
+| **IPC** | 0.3816 | **1.264** (+231%) | 0.2389 | **0.5465** (+129%) |
+| Avg Off-Chip Latency | 238.1 cycles | 50.4 cycles | 95.6 cycles | 11.9 cycles |
+| LLC PREFETCH USEFUL | 52,751 | **31,175** | 124 | **110** |
+| LLC LOAD MSHR_MERGE | 52,489 | 30,752 | 0 | 0 |
+
+### What this shows
+
+IPC improved by **+231%** (lbm) and **+129%** (omnetpp) solely from lower CXL latency — but oracle USEFUL prefetches **decreased** for lbm and barely changed for omnetpp. The oracle did not drive the speedup; the memory subsystem did.
+
+This confirms the root cause: `ideal_prefetch` reads from the **back of the oracle queue** (the CPU's current frontier — addresses that just entered the L1D→LLC pipeline). Those addresses arrive at LLC as demands in ~15 cycles regardless of CXL latency. Even at 50-cycle CXL RTT, 15 < 50, so the demand still beats the prefetch → MSHR_MERGE persists.
+
+```
+Back-of-queue entries arrive at LLC in:  ~15 cycles  (L1D→LLC pipeline)
+CXL RTT (normal):                        ~238 cycles  → demand wins → MSHR_MERGE
+CXL RTT (fast):                          ~50 cycles   → demand still wins → MSHR_MERGE
+```
+
+The oracle would need to read entries from **just ahead of LLC's current demand position** in the queue (not the CPU frontier) to achieve true cache hits. At lbm's average inter-miss interval (~258 cycles), prefetching the next 16 demands would give ~258–2580 cycles of lead time — enough to beat even normal CXL latency.
+
+---
+
 ## Analysis
 
 ### Why IPC improvement is near-zero despite useful prefetches
