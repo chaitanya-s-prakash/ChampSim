@@ -161,12 +161,12 @@ DDR capacity: `bank_rows = 64` → **16 MiB DDR**, forcing working sets > 16 MiB
 ### Build
 
 ```bash
-# Build oracle tiered binary
+# Configure and build oracle tiered binary
 ./config.sh oracle_tiered_config.json
 make -j
 # → bin/champsim_oracle_tiered
 
-# Build baseline tiered binary (for comparison)
+# Configure and build baseline tiered binary (for comparison)
 ./config.sh tiered_memory_config.json
 make -j
 # → bin/champsim_tiered
