@@ -6,13 +6,43 @@ This document describes the **ideal prefetching** implementation integrated into
 
 ### Why this is an oracle and not a real prefetcher
 
-A real hardware prefetcher must **predict** future addresses from observed patterns — and fails on data-dependent or irregular accesses. The oracle is fundamentally different:
+The key is how ChampSim traces are generated vs. replayed.
 
-- **Data-dependent loads (pointer chasing):** The address of load #N+1 is stored at the memory location fetched by load #N. A real prefetcher cannot compute address #N+100 without first executing loads #1 through #99. The oracle has these addresses because ChampSim is trace-based — the CPU pipeline has already replayed that future.
-- **Perfect address accuracy:** Pattern-based prefetchers (IP-stride, Berti, SPP, AMPM) achieve high accuracy on regular stride and stencil patterns but have severely reduced effectiveness on data-dependent, irregular access patterns where each address is computed from a previously fetched value. The oracle has 100% *address* accuracy on all patterns — it only ever prefetches addresses that will definitely be demanded. Note: this is distinct from *timing* accuracy; the oracle's measured LLC useful/issued ratio is near 0% because most prefetches arrive after the demand due to MSHR timing constraints (see Results section).
-- **No hardware cost:** Recording every L1D miss address in a 2048-entry global queue would require bandwidth and storage impractical in real silicon. A real prefetcher is area-and-power-constrained.
+A trace is produced by running the actual program on real hardware and recording every instruction with its **pre-resolved memory address**. The address of every load — including those that depend on prior loads' data — is already baked into the trace record before ChampSim ever sees it.
 
-The oracle exploits ChampSim's trace-based simulation: the CPU pipeline runs far ahead of LLC in simulation time, so the queue contains addresses the CPU has already computed but LLC has not yet received. In real hardware, those future addresses do not exist until the instructions that compute them are actually executed.
+When ChampSim dispatches a load, it reads the address directly from the trace. There is no "wait for the prior load's data to compute this address." This breaks load-to-address dependencies entirely.
+
+**On real hardware this is impossible:**
+
+```
+Real pointer-chasing chain:
+
+  Load A:  addr = base_ptr         → issues to memory, waits 238 cycles
+                   ↓ (data returns after 238 cycles)
+  Load B:  addr = *base_ptr        → CAN'T issue until Load A returns
+                   ↓ (waits another 238 cycles)
+  Load C:  addr = **base_ptr       → CAN'T issue until Load B returns
+
+  Total to get 3 addresses: 714 cycles, fully serialized
+```
+
+**ChampSim trace replay:**
+
+```
+  Load A:  addr = 0x1000  (from trace) → issued immediately
+  Load B:  addr = 0x2000  (from trace) → issued immediately
+  Load C:  addr = 0x3000  (from trace) → issued immediately
+
+  Total to dispatch 3 loads: 3 cycles (ROB dispatch bandwidth limited)
+```
+
+**The consequence for the oracle:**
+
+Because ChampSim dispatches pointer-chasing loads without waiting for each load's data, the CPU pipeline sprints far ahead of the memory subsystem. While LLC is still resolving load A (238-cycle CXL miss), the CPU has already dispatched loads B, C, D... all the way to load A+500. All of those addresses are sitting in the oracle queue. A real CPU would be blocked at load B waiting for A's data.
+
+This is exactly why the oracle is only achievable in simulation — it exploits a property (pre-resolved addresses) that physically cannot exist in hardware until the memory dependency chain has actually executed.
+
+**Note on accuracy:** The oracle has 100% *address* accuracy — it never prefetches an address that won't be demanded. This is distinct from *timing* accuracy; the oracle's measured LLC useful/issued ratio is near 0% because most prefetches still arrive after the demand due to MSHR timing constraints (see Results). For regular stride patterns (lbm), a real prefetcher like Berti can predict addresses too — the oracle's advantage there is deeper lookahead and zero false prefetches, not fundamental address knowledge.
 
 ### How addresses enter the queue — pipeline timing
 
