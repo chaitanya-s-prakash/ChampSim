@@ -232,14 +232,33 @@ To confirm that the oracle's low IPC impact is a **timing constraint** (not a co
 
 Config: `oracle_tiered_fastcxl_config.json`. Logs: `logs/oracle_fastcxl/`.
 
-### Results
+### Results — 619.lbm_s-2676B
 
-| Metric | LBM normal CXL | LBM fast CXL | omnetpp normal CXL | omnetpp fast CXL |
-|--------|---------------|-------------|-------------------|-----------------|
-| **IPC** | 0.3816 | **1.264** (+231%) | 0.2389 | **0.5465** (+129%) |
-| Avg Off-Chip Latency | 238.1 cycles | 50.4 cycles | 95.6 cycles | 11.9 cycles |
-| LLC PREFETCH USEFUL | 52,751 | **31,175** | 124 | **110** |
-| LLC LOAD MSHR_MERGE | 52,489 | 30,752 | 0 | 0 |
+| Metric | Oracle (normal CXL) | Oracle (fast CXL) | Delta |
+|--------|--------------------|--------------------|-------|
+| IPC | 0.3816 | **1.264** | +231% |
+| LLC LOAD MISS | 507,664 | 507,505 | -159 |
+| LLC LOAD MSHR_MERGE | 52,489 | 30,752 | -21,737 |
+| LLC PREFETCH USEFUL | 52,751 | 31,175 | -21,576 |
+| DDR Hit Rate | 3.4% | 3.3% | — |
+| CXL Pages Resident | 57,534 | 57,534 | 0 |
+| Avg Off-Chip Latency | 237.9 cycles | 50.4 cycles | -79% |
+| Prefetches Issued (oracle stat) | 7,693,868 | 7,454,457 | — |
+| Useful Prefetches (oracle stat) | 2,302 | 2,463 | — |
+
+### Results — 620.omnetpp_s-141B
+
+| Metric | Oracle (normal CXL) | Oracle (fast CXL) | Delta |
+|--------|--------------------|--------------------|-------|
+| IPC | 0.2389 | **0.5465** | +129% |
+| LLC LOAD MISS | 496,016 | 495,963 | -53 |
+| LLC LOAD MSHR_MERGE | 0 | 0 | 0 |
+| LLC PREFETCH USEFUL | 124 | 110 | -14 |
+| DDR Hit Rate | 7.6% | 7.6% | — |
+| CXL Pages Resident | 457,865 | 457,898 | — |
+| Avg Off-Chip Latency | 95.59 cycles | 11.86 cycles | -88% |
+| Prefetches Issued (oracle stat) | 11,023,274 | 11,008,260 | — |
+| Useful Prefetches (oracle stat) | 0 | 0 | — |
 
 ### What this shows
 
