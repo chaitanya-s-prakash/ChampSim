@@ -4,6 +4,75 @@
 
 This document describes the **ideal prefetching** implementation integrated into the two-tier DDR/CXL ChampSim baseline. The oracle prefetcher represents a theoretical upper bound: it has perfect knowledge of future load addresses and zero mispredictions. Its purpose is to quantify the maximum benefit that any cache-line prefetcher can provide in a two-tier memory system, and to identify what performance limits are architectural rather than accuracy-based.
 
+### Why this is an oracle and not a real prefetcher
+
+A real hardware prefetcher must **predict** future addresses from observed patterns — and fails on data-dependent or irregular accesses. The oracle is fundamentally different:
+
+- **Data-dependent loads (pointer chasing):** The address of load #N+1 is stored at the memory location fetched by load #N. A real prefetcher cannot compute address #N+100 without first executing loads #1 through #99. The oracle has these addresses because ChampSim is trace-based — the CPU pipeline has already replayed that future.
+- **Perfect accuracy on all patterns:** Stride prefetchers (Berti, AMPM, SPP) work well on regular stencil access but fail entirely on irregular graph traversal. The oracle achieves 100% accuracy on both.
+- **No hardware cost:** Recording every L1D miss address in a 2048-entry global queue would require bandwidth and storage impractical in real silicon. A real prefetcher is area-and-power-constrained.
+
+The oracle exploits ChampSim's trace-based simulation: the CPU pipeline runs far ahead of LLC in simulation time, so the queue contains addresses the CPU has already computed but LLC has not yet received. In real hardware, those future addresses do not exist until the instructions that compute them are actually executed.
+
+### How addresses enter the queue — pipeline timing
+
+In ChampSim, each simulated CPU cycle executes these pipeline stages in order:
+
+```
+CPU tick (each cycle):
+  1. execute_instruction()     — instructions retire from ROB
+  2. schedule_instruction()    — mark instructions ready to execute
+  3. handle_memory_return()    — LLC responses arrive back at CPU
+  4. operate_lsq()             — send ready loads from load queue → L1D  ← PUSH happens here
+  5. dispatch_instruction()    — new instructions enter ROB
+  6. decode_instruction()
+  7. fetch_instruction()
+```
+
+At step 4, `operate_lsq()` calls `execute_load()` for each ready load, which sends a request to L1D. When L1D processes that request and sees a cache miss, it immediately calls `oracle_feeder::prefetcher_cache_operate()`, which pushes the physical address to the back of the oracle queue.
+
+The address then travels through the memory hierarchy:
+
+```
+CPU tick T:
+  operate_lsq() → execute_load() → L1D miss
+    oracle_feeder pushes addr X to queue back
+
+T + ~5 cycles:   L1D miss arrives at L2C
+
+T + ~15 cycles:  L2C miss → demand arrives at LLC
+                 ideal_prefetch runs, reads queue BACK
+                 queue back now holds addrs from T+100, T+200, ...
+                 (CPU has already dispatched hundreds more loads)
+```
+
+### Why the back of the queue contains truly future addresses
+
+LLC takes ~238 cycles to service a CXL miss. During those 238 cycles, the OOO CPU continues executing, dispatching new loads to L1D, all of which push new addresses to the back of the oracle queue. When `ideal_prefetch` runs on the next LLC demand, the queue state looks like this:
+
+```
+Queue (2048 entries, front = oldest, back = newest):
+
+  front [... addr#800, addr#801, ..., addr#999,
+              addr#1000  ← LLC is currently here
+              addr#1001, addr#1002, ..., addr#1500 ...] back
+                                        ▲
+                          ideal_prefetch reads these 16 entries
+                          LLC has not seen them yet
+```
+
+Entries near the back are addresses the CPU computed via `operate_lsq()` hundreds of cycles ago in simulation time, but that have not yet arrived at LLC as demand misses. Prefetching them now means the data can be fetched from CXL before the demand arrives — if the timing works out.
+
+### Why real hardware cannot replicate this
+
+On real hardware, the addresses near the back of the queue (`addr#1001` to `addr#1500` in the example above) **do not exist yet**. To compute `addr#1001`, the CPU must:
+
+1. Execute the load at `addr#1000`
+2. Wait for `addr#1000`'s data to return from memory (~238 cycles for CXL)
+3. Use that data to compute the address of the next load (for pointer-chasing patterns)
+
+For data-independent patterns (strides, streams), a real prefetcher like Berti can predict ahead. But for pointer-chasing workloads like `omnetpp`, each address depends on fetched data — no hardware prefetcher can see beyond the current outstanding load without speculative execution across cache misses, which no existing microarchitecture does.
+
 **Design choice:** Prefetch cache lines from DDR or CXL directly into the LLC — no page migration between tiers.
 
 ---
