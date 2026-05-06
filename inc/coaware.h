@@ -83,6 +83,14 @@ extern std::unordered_map<uint64_t, uint64_t> recently_demoted_pages;
 // Reset to 0 when rate drops below threshold, or when the page is promoted.
 extern std::unordered_map<uint64_t, int> high_uncovered_rate_epochs;
 
+// Per-page count of CXL-targeted prefetches issued by Berti this epoch.
+// Key: logical page number.  Value: prefetch issue count.
+// Written by Berti's issue path; reset at every epoch boundary.
+// Used to rank candidates under Trigger 2 (budget exhaustion): the pages Berti
+// is actively prefetching from CXL are the ones consuming the budget, so they
+// are the correct targets to promote — not the demand-miss-heavy pages.
+extern std::unordered_map<uint64_t, uint64_t> cxl_pf_issued_per_page;
+
 // ── Epoch-level state ─────────────────────────────────────────────────────────
 
 // Mirrors M5Manager::epoch_count_.  Set at the start of each epoch.

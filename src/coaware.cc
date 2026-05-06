@@ -15,6 +15,7 @@ std::unordered_map<uint64_t, uint64_t> recently_migrated_pages;
 std::unordered_map<uint64_t, uint64_t> recently_demoted_pages;
 
 std::unordered_map<uint64_t, int>      high_uncovered_rate_epochs;
+std::unordered_map<uint64_t, uint64_t> cxl_pf_issued_per_page;
 
 uint64_t current_epoch                    = 0;
 float    epoch_max_hotness                = 1.0f;
