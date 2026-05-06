@@ -21,6 +21,7 @@
 #include <cmath>
 #include <fmt/core.h>
 
+#include "coaware.h"
 #include "deadlock.h"
 #include "instruction.h"
 #include "util/bits.h" // for lg2, bitmask
@@ -651,6 +652,12 @@ bool MEMORY_CONTROLLER::add_rq(const request_type& packet, champsim::channel* ul
       // DDR access — reset MGLRU generation to mark the page as recently used.
       placement_table.touch(logical_ppage);
     }
+
+    // Co-aware: track DRAM-level hotness and lifetime access count.
+    // Both use the logical page number so they remain stable across migrations.
+    // page_hotness is decayed each epoch; page_total_accesses is never reset (Fix C4, M1).
+    coaware::page_hotness[logical_ppage]        += 1.0f;
+    coaware::page_total_accesses[logical_ppage] += 1;
   }
 
   if (auto rq_it = std::find_if_not(std::begin(channel.RQ), std::end(channel.RQ), [this](const auto& pkt) { return pkt.has_value(); });
