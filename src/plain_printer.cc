@@ -228,6 +228,10 @@ std::vector<std::string> champsim::plain_printer::format(m5::MigrationStats stat
   lines.push_back(fmt::format("  SKIPPED bw-density trigger: {:10}", stats.skipped_bw_density_trigger));
   lines.push_back(fmt::format("  SKIPPED cooldown:           {:10}", stats.skipped_cooldown));
   lines.push_back(fmt::format("  SKIPPED no DDR victim:      {:10}", stats.skipped_no_victim));
+  lines.emplace_back("");
+  lines.emplace_back("Co-Aware Triggers (ROI)");
+  lines.push_back(fmt::format("  TRIGGER budget exhaustion:  {:10}", stats.coaware_budget_triggers));
+  lines.push_back(fmt::format("  TRIGGER high uncov rate:    {:10}", stats.coaware_uncovered_triggers));
 
   return lines;
 }
