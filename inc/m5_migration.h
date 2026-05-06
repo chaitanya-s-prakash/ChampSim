@@ -31,6 +31,10 @@ struct MigrationStats {
 
   uint64_t total_epochs_fired         = 0;  // epochs where migration pipeline ran
   uint64_t total_epochs_skipped       = 0;  // epochs where Elector decided not to migrate
+
+  // Co-aware trigger counters.
+  uint64_t coaware_budget_triggers    = 0;  // migrations fired by CXL budget exhaustion
+  uint64_t coaware_uncovered_triggers = 0;  // migrations fired by high uncovered-access-rate
 };
 
 // Compute the CPU-cycle cost of copying one page between tiers.

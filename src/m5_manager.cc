@@ -107,6 +107,8 @@ MigrationStats M5Manager::roi_migration_stats() const
   roi.skipped_bw_density_trigger  = stats_.skipped_bw_density_trigger  - roi_snapshot_.skipped_bw_density_trigger;
   roi.skipped_cooldown            = stats_.skipped_cooldown            - roi_snapshot_.skipped_cooldown;
   roi.skipped_no_victim           = stats_.skipped_no_victim           - roi_snapshot_.skipped_no_victim;
+  roi.coaware_budget_triggers     = stats_.coaware_budget_triggers     - roi_snapshot_.coaware_budget_triggers;
+  roi.coaware_uncovered_triggers  = stats_.coaware_uncovered_triggers  - roi_snapshot_.coaware_uncovered_triggers;
   return roi;
 }
 
@@ -174,16 +176,42 @@ std::vector<uint64_t> M5Manager::nominate_candidates()
 // ---------------------------------------------------------------------------
 bool M5Manager::should_migrate(const EpochStats& es, std::size_t n_candidates)
 {
+  // All triggers require at least one HPT candidate to act on.
   if (n_candidates < cfg_.min_candidates_per_epoch)
     return false;
 
-  // Bandwidth-density trigger: CXL is "hotter per page" than DDR.
-  if (es.density_ratio < cfg_.bw_density_ratio_threshold) {
-    ++stats_.skipped_bw_density_trigger;
-    return false;
+  // Trigger 1 (original M5): CXL bandwidth density exceeds DDR density.
+  // Indicates CXL pages are receiving disproportionate traffic — migration
+  // will relieve CXL pressure and improve average access latency.
+  if (es.density_ratio >= cfg_.bw_density_ratio_threshold)
+    return true;
+
+  // Trigger 2: CXL prefetch budget has been exhausted for several consecutive
+  // epochs.  This means Berti is actively trying to prefetch from CXL at full
+  // capacity — the pages causing that pressure should be moved to DDR.
+  // Candidates are already ranked by cxl_pf_issued_per_page (Fix S8) so the
+  // pages consuming the most budget will be promoted first.
+  if (coaware::cxl_prefetch_budget_exhausted_epochs >= coaware::MIGRATION_TRIGGER_EPOCHS) {
+    coaware::cxl_prefetch_budget_exhausted_epochs = 0;  // reset after acting
+    ++stats_.coaware_budget_triggers;
+    return true;
   }
 
-  return true;
+  // Trigger 3: a CXL page has had persistently high uncovered access rate for
+  // several consecutive epochs.  These are unprefetchable hot pages — Berti
+  // issues no prefetches for them so they never exhaust the budget (Trigger 2
+  // would miss them entirely).  Every demand access stalls at CXL latency.
+  for (const auto& [page_num, cnt] : coaware::high_uncovered_rate_epochs) {
+    if (cnt >= coaware::MIGRATION_TRIGGER_EPOCHS) {
+      ++stats_.coaware_uncovered_triggers;
+      return true;
+    }
+  }
+
+  // No trigger fired — log it against the bw-density counter (the original
+  // M5 diagnostic: density ratio was insufficient and no co-aware override applied).
+  ++stats_.skipped_bw_density_trigger;
+  return false;
 }
 
 // ---------------------------------------------------------------------------
