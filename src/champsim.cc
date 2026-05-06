@@ -23,6 +23,7 @@
 #include <fmt/chrono.h>
 #include <fmt/core.h>
 
+#include "coaware.h"
 #include "environment.h"
 #include "m5_manager.h"
 #include "ooo_cpu.h"
@@ -197,7 +198,8 @@ std::vector<phase_stats> main(environment& env, std::vector<phase_info>& phases,
   // Initialize the M5 migration manager.  It holds a reference to the memory
   // controller and is triggered from O3_CPU::operate() via g_m5_manager.
   m5::M5Manager m5_manager{env.dram_view()};
-  m5::g_m5_manager = &m5_manager;
+  m5::g_m5_manager  = &m5_manager;
+  coaware::g_mc     = &env.dram_view();
 
   champsim::chrono::clock global_clock;
   std::vector<phase_stats> results;
@@ -216,6 +218,7 @@ std::vector<phase_stats> main(environment& env, std::vector<phase_info>& phases,
   }
 
   m5::g_m5_manager = nullptr;
+  coaware::g_mc    = nullptr;
   return results;
 }
 } // namespace champsim
