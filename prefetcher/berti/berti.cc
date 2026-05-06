@@ -5,6 +5,7 @@
 
 #include "cache.h"
 #include "coaware.h"
+#include "dram_controller.h"
 
 uint64_t berti::current_cycle() const
 {
