@@ -115,3 +115,43 @@ For omnetpp (pointer chasing, irregular access), the same bandwidth ceiling appl
 | omnetpp | 96 cycles | 420 cycles | **324 cycles** | 20 |
 
 lbm's 14-cycle margin is the binding constraint — any prefetcher for lbm must issue its prefetch within a 14-cycle window of the ideal issue time, or the demand will arrive first.
+
+---
+
+## Cache Line Granularity — Another Upper Bound
+
+Each CXL request fetches exactly **one 64-byte naturally-aligned cache line**. This is a hardware invariant: you cannot request non-contiguous bytes in a single transaction, and you cannot request more than 64 bytes per request.
+
+```
+prefetch_line(0x1234)  →  fetches bytes [0x1200 .. 0x123F]  (aligned to 64-byte boundary)
+```
+
+If a future load accesses an address in a different 64-byte block, it requires a completely separate CXL request, each paying the full latency independently.
+
+### Implication for prefetch coverage
+
+For a workload where loads are spread across many non-contiguous 64-byte blocks (e.g. omnetpp pointer chasing), each unique block requires its own prefetch request. There is no way to "batch" non-contiguous data into a single CXL transfer.
+
+This sets a hard upper bound on **prefetch coverage per unit of bandwidth**:
+
+```
+1 CXL request = 64 bytes = 1 cache line = 1 future load covered
+To cover N unique cache lines = N separate requests × 20 cycles each = N × 20 cycles of CXL bandwidth
+```
+
+For lbm (streaming stencil, mostly sequential addresses):
+- Sequential loads often fall in the **same 64-byte block** → multiple loads covered by one prefetch
+- Effective prefetch efficiency is high — one request covers several nearby loads
+
+For omnetpp (pointer chasing, random addresses):
+- Each load typically lands in a **different 64-byte block** → one prefetch per load, no sharing
+- Every future load requires its own request; no batching possible
+
+Combined with the bandwidth limit of 1 line per 20 cycles and lbm's 258-cycle inter-miss interval, the maximum number of **distinct cache lines** that can be prefetched and delivered before the next demand is:
+
+```
+lbm:    floor(258 / 20) = 12 unique lines
+omnetpp: floor(420 / 20) = 21 unique lines  (within 96-cycle RTT window: floor(324 / 20) = 16)
+```
+
+Any prefetcher claiming to cover more than these counts per demand interval will be limited by CXL bus bandwidth, not by MSHR capacity or LLC size.
