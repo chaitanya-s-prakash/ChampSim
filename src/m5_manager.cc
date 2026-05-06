@@ -2,12 +2,81 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <unordered_map>
 
 #include "champsim.h"       // LOG2_PAGE_SIZE, LOG2_BLOCK_SIZE, PAGE_SIZE, BLOCK_SIZE
+#include "coaware.h"
 #include "page_placement.h"
 
 namespace m5
 {
+
+// ---------------------------------------------------------------------------
+// Co-aware signal computation helpers — called at every epoch boundary.
+// Both helpers are file-scoped (static) because only M5Manager needs them.
+// ---------------------------------------------------------------------------
+
+// Compute page_uncovered_rate for every CXL-resident page.
+// Formula: for each (ip_tag, page) pair in ip_page_access_count where the
+// page is CXL-resident, add freq * (1 - coverage) to page_uncovered_rate.
+// Pages that have not yet accumulated GRACE_PERIOD_ACCESSES total lifetime
+// DRAM reads are skipped — the prefetchability signal is not yet trustworthy.
+static void compute_uncovered_access_rates(MEMORY_CONTROLLER& dram)
+{
+  coaware::page_uncovered_rate.clear();
+
+  for (const auto& [ip_tag, page_map] : coaware::ip_page_access_count) {
+    const float coverage = coaware::ip_max_coverage.count(ip_tag)
+                           ? coaware::ip_max_coverage.at(ip_tag) : 0.0f;
+    const float uncov = 1.0f - coverage;
+
+    for (const auto& [page_num, freq] : page_map) {
+      // Grace period: skip pages with insufficient DRAM access history (Fix M1).
+      const uint64_t lifetime = coaware::page_total_accesses.count(page_num)
+                                ? coaware::page_total_accesses.at(page_num) : 0;
+      if (lifetime < coaware::GRACE_PERIOD_ACCESSES)
+        continue;
+
+      champsim::address addr{page_num << LOG2_PAGE_SIZE};
+      if (dram.placement_table.get_tier(addr) == PagePlacementTable::Tier::CXL)
+        coaware::page_uncovered_rate[page_num] += static_cast<float>(freq) * uncov;
+    }
+  }
+}
+
+// Compute page_prefetchability for every DDR-resident page.
+// Formula: weighted average of ip_max_coverage across all IPs that accessed
+// the page this epoch, weighted by access frequency.
+// Pages still in the grace period get a neutral value of 0.5 (Fix M1) so
+// they neither strongly attract nor repel demotion decisions.
+static void update_page_prefetchability(MEMORY_CONTROLLER& dram)
+{
+  std::unordered_map<uint64_t, float>    total_acc;
+  std::unordered_map<uint64_t, float>    weighted_cov;
+
+  for (const auto& [ip_tag, page_map] : coaware::ip_page_access_count) {
+    const float cov = coaware::ip_max_coverage.count(ip_tag)
+                      ? coaware::ip_max_coverage.at(ip_tag) : 0.0f;
+
+    for (const auto& [page_num, freq] : page_map) {
+      champsim::address addr{page_num << LOG2_PAGE_SIZE};
+      if (dram.placement_table.get_tier(addr) != PagePlacementTable::Tier::DDR)
+        continue;
+      total_acc[page_num]    += static_cast<float>(freq);
+      weighted_cov[page_num] += static_cast<float>(freq) * cov;
+    }
+  }
+
+  for (const auto& [page_num, total] : total_acc) {
+    const uint64_t lifetime = coaware::page_total_accesses.count(page_num)
+                              ? coaware::page_total_accesses.at(page_num) : 0;
+    if (lifetime < coaware::GRACE_PERIOD_ACCESSES)
+      coaware::page_prefetchability[page_num] = 0.5f;   // neutral during grace period
+    else if (total > 0.0f)
+      coaware::page_prefetchability[page_num] = weighted_cov.at(page_num) / total;
+    // If total == 0 (shouldn't happen) leave existing value — staleness accepted.
+  }
+}
 
 // Global singleton — set to a live instance by champsim::main() before any
 // phase runs, and reset to nullptr after phases complete.
