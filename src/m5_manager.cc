@@ -215,6 +215,50 @@ bool M5Manager::should_migrate(const EpochStats& es, std::size_t n_candidates)
 }
 
 // ---------------------------------------------------------------------------
+// Co-aware DDR victim selection.
+//
+// The original MGLRU victim (get_ddr_victim) picks the coldest DDR page by
+// recency generation.  The co-aware version scores every eligible DDR page by:
+//
+//   score = prefetchability × (1 - normalised_hotness)
+//
+// High score = cold + prefetchable = ideal demotion candidate.
+// A prefetchable cold page can safely live in CXL — Berti will cover its
+// latency.  A hot or unprefetchable page should stay in DDR.
+//
+// Falls back to MGLRU if page_prefetchability has no data yet (e.g. warmup).
+// ---------------------------------------------------------------------------
+static uint64_t coaware_ddr_victim(PagePlacementTable& pt, uint8_t max_gen)
+{
+  uint64_t best_page  = UINT64_MAX;
+  float    best_score = -1.0f;
+
+  for (const auto& [page_num, pref] : coaware::page_prefetchability) {
+    champsim::address addr{page_num << LOG2_PAGE_SIZE};
+    if (pt.get_tier(addr) != PagePlacementTable::Tier::DDR)
+      continue;
+    if (pt.is_in_cooldown(page_num))
+      continue;
+
+    const float hotness     = coaware::page_hotness.count(page_num)
+                              ? coaware::page_hotness.at(page_num) : 0.0f;
+    const float norm_hot    = hotness / coaware::epoch_max_hotness;
+    const float score       = pref * (1.0f - norm_hot);
+
+    if (score > best_score) {
+      best_score = score;
+      best_page  = page_num;
+    }
+  }
+
+  // Fall back to MGLRU if co-aware data is unavailable.
+  if (best_page == UINT64_MAX)
+    best_page = pt.get_ddr_victim(max_gen);
+
+  return best_page;
+}
+
+// ---------------------------------------------------------------------------
 // Promoter: execute migrations and account for copy cost.
 // ---------------------------------------------------------------------------
 void M5Manager::promote_candidates(const std::vector<uint64_t>& candidates)
@@ -230,10 +274,11 @@ void M5Manager::promote_candidates(const std::vector<uint64_t>& candidates)
     if (done >= cfg_.max_migrations_per_epoch)
       break;
 
-    uint64_t ddr_victim = dram_.placement_table.get_ddr_victim(max_gen);
+    // Co-aware victim: prefer cold + prefetchable DDR pages over pure MGLRU.
+    uint64_t ddr_victim = coaware_ddr_victim(dram_.placement_table, max_gen);
     if (ddr_victim == UINT64_MAX) {
       ++stats_.skipped_no_victim;
-      break; // no eligible DDR victim — stop for this epoch
+      break;
     }
 
     dram_.placement_table.migrate(cxl_ppage, ddr_victim);
@@ -241,6 +286,18 @@ void M5Manager::promote_candidates(const std::vector<uint64_t>& candidates)
                                        static_cast<uint32_t>(cfg_.migration_cooldown_epochs));
     dram_.placement_table.set_cooldown(ddr_victim,
                                        static_cast<uint32_t>(cfg_.migration_cooldown_epochs));
+
+    // Fix C1: write migration signals so Berti suppresses stale history writes
+    // and applies demotion conservatism for the page moving to CXL.
+    coaware::recently_migrated_pages[cxl_ppage] = epoch_count_;  // CXL → DDR
+    coaware::recently_migrated_pages[ddr_victim] = epoch_count_;  // DDR → CXL
+    coaware::recently_demoted_pages[ddr_victim]  = epoch_count_;  // DDR → CXL is a demotion
+
+    // Reset high-uncovered-rate counter for the promoted page — it is now DDR.
+    coaware::high_uncovered_rate_epochs.erase(cxl_ppage);
+
+    // Remove promoted page from cxl_pf_issued_per_page to keep Trigger 2 accurate.
+    coaware::cxl_pf_issued_per_page.erase(cxl_ppage);
 
     ++stats_.total_promotions;
     ++stats_.total_demotions;
