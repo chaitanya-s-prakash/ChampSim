@@ -4,6 +4,7 @@
 #include <fmt/core.h>
 
 #include "cache.h"
+#include "coaware.h"
 
 uint64_t berti::current_cycle() const
 {
@@ -84,6 +85,21 @@ bool berti::is_demand(access_type type)
 
 void berti::add_history(champsim::address ip, uint64_t line, uint64_t cycle)
 {
+  // Co-aware Fix C1/C2: skip this history write if the page recently migrated.
+  // Migration invalidates latency measurements — the timestamp recorded now would
+  // be at the old tier's latency, corrupting timely-delta computation at the new tier.
+  // The check is per-page (not per-IP), so only this specific page is suppressed;
+  // other pages accessed by the same IP write normally (Fix C2).
+  const uint64_t page_num = address_from_line(line).to<uint64_t>() >> LOG2_PAGE_SIZE;
+  auto mig_it = coaware::recently_migrated_pages.find(page_num);
+  if (mig_it != coaware::recently_migrated_pages.end()) {
+    if (coaware::current_epoch - mig_it->second <= 1) {
+      ++stats.history_skipped_migration;
+      return;  // let Berti re-measure latency from scratch at the new tier
+    }
+    coaware::recently_migrated_pages.erase(mig_it);  // signal expired
+  }
+
   auto& set = history.at(history_set_index(ip));
   auto& victim = set.entries.at(set.next_victim);
   if (victim.valid)
@@ -378,6 +394,19 @@ void berti::classify(ip_delta_entry& entry)
   entry.search_count = 0;
   entry.classified = true;
   ++stats.delta_classifications;
+
+  // Co-aware: update ip_max_coverage for this ip_tag after every classification.
+  // coverage is uint8_t in [0, LEARNING_ROUNDS]; normalise to [0.0, 1.0].
+  // We take the max across all valid deltas: a single high-coverage delta is
+  // enough to consider this IP as "prefetchable".
+  float max_cov = 0.0f;
+  for (const auto& d : entry.deltas) {
+    if (d.valid) {
+      float cov = static_cast<float>(d.coverage) / static_cast<float>(LEARNING_ROUNDS);
+      if (cov > max_cov) max_cov = cov;
+    }
+  }
+  coaware::ip_max_coverage[entry.ip_tag] = max_cov;
 }
 
 void berti::limit_selected_deltas(ip_delta_entry& entry)
@@ -520,6 +549,22 @@ uint32_t berti::prefetcher_cache_operate(champsim::address addr, champsim::addre
   const auto line = line_number(addr);
   ++stats.accesses;
 
+  // Co-aware: track demand accesses per (ip_tag, page) this epoch.
+  // Keyed on delta_table_ip_tag (10-bit) for consistency with ip_max_coverage.
+  // Inner map is bounded at MAX_PAGES_PER_IP; evict the least-accessed entry
+  // when full rather than growing unboundedly (Fix M2).
+  {
+    const uint64_t page_num = addr.to<uint64_t>() >> LOG2_PAGE_SIZE;
+    const uint64_t ip_tag   = delta_table_ip_tag(ip);
+    auto& page_map = coaware::ip_page_access_count[ip_tag];
+    page_map[page_num]++;
+    if (page_map.size() > coaware::MAX_PAGES_PER_IP) {
+      auto min_it = std::min_element(page_map.begin(), page_map.end(),
+          [](const auto& a, const auto& b) { return a.second < b.second; });
+      page_map.erase(min_it);
+    }
+  }
+
   if (useful_prefetch) {
     ++stats.useful_prefetches;
     const auto latency = consume_prefetch_latency(line);
@@ -605,4 +650,5 @@ void berti::prefetcher_final_stats()
   fmt::print("  TRAINED_DELTAS:                {}\n", stats.trained_deltas);
   fmt::print("  DELTA_CLASSIFICATIONS:         {}\n", stats.delta_classifications);
   fmt::print("  WARMUP_PREFETCH_CANDIDATES:    {}\n", stats.warmup_prefetch_candidates);
+  fmt::print("  HISTORY_SKIPPED_MIGRATION:     {}\n", stats.history_skipped_migration);
 }
