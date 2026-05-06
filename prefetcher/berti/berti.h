@@ -123,8 +123,11 @@ class berti : public champsim::modules::prefetcher {
     uint64_t trained_deltas = 0;
     uint64_t delta_classifications = 0;
     uint64_t warmup_prefetch_candidates = 0;
-    // Co-aware stats (Step 3)
+    // Co-aware stats 
     uint64_t history_skipped_migration = 0;  // history writes skipped due to recent migration
+    // Co-aware stats 
+    uint64_t cxl_prefetches_issued     = 0;  // prefetches issued to CXL-resident pages
+    uint64_t cxl_prefetches_suppressed = 0;  // prefetches suppressed by CXL budget
   };
 
   std::array<in_flight_entry, IN_FLIGHT_ENTRIES> in_flight{};

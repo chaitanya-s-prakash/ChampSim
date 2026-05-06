@@ -200,13 +200,56 @@ void berti::issue_prefetches(champsim::address ip, uint64_t line, uint64_t cycle
     if (auto* inflight = find_in_flight(pf_line); inflight != nullptr && inflight->prefetch_valid)
       continue;
 
-    const auto fill_l1 = delta.status == delta_status::l1_pref && l1_mshr_available;
-    if (prefetch_line(address_from_line(pf_line), fill_l1, 0)) {
-      record_prefetch_issue(pf_line, cycle);
-      if (fill_l1)
-        ++stats.prefetch_issued_l1;
-      else
+    const champsim::address pf_addr = address_from_line(pf_line);
+    const uint64_t          pf_page = pf_addr.to<uint64_t>() >> LOG2_PAGE_SIZE;
+
+    // Co-aware: check whether the prefetch target is CXL-resident.
+    // g_mc is the live MEMORY_CONTROLLER pointer set by champsim::main().
+    // virtual_prefetch=false ensures pf_addr is a physical address, which is
+    // what PagePlacementTable expects.
+    const bool target_is_cxl = coaware::g_mc && coaware::g_mc->is_cxl_access(pf_addr);
+
+    if (target_is_cxl) {
+      // Suppress if the epoch CXL prefetch budget is exhausted.
+      if (coaware::cxl_prefetch_budget_remaining <= 0) {
+        ++stats.cxl_prefetches_suppressed;
+        continue;
+      }
+      --coaware::cxl_prefetch_budget_remaining;
+
+      // Always issue as L2 fill for CXL targets.
+      // Rationale: CXL fills are slow (~2× DDR latency); filling into L1
+      // would block the L1 MSHR for longer and pollute L1 with lines that
+      // arrive well after the demand window. L2 fill is conservative and
+      // sufficient — Berti will re-promote to L1 on the next access.
+      if (prefetch_line(pf_addr, false, 0)) {
+        record_prefetch_issue(pf_line, cycle);
         ++stats.prefetch_issued_l2;
+        ++stats.cxl_prefetches_issued;
+        coaware::cxl_pf_issued_per_page[pf_page]++;
+      }
+
+    } else {
+      // DDR target — normal Berti fill-level logic, with one addition:
+      //
+      // Fix: if pf_page was recently demoted (DDR→CXL), force L2 fill for
+      // this specific prefetch. This avoids late-prefetch stalls while Berti
+      // re-learns the new (higher) CXL latency. The delta table itself is NOT
+      // mutated — conservatism is scoped to this page only, not the whole IP.
+      const bool recently_demoted =
+          coaware::recently_demoted_pages.count(pf_page) &&
+          (coaware::current_epoch - coaware::recently_demoted_pages.at(pf_page) <= 1);
+
+      const bool fill_l1 = delta.status == delta_status::l1_pref
+                           && l1_mshr_available
+                           && !recently_demoted;
+      if (prefetch_line(pf_addr, fill_l1, 0)) {
+        record_prefetch_issue(pf_line, cycle);
+        if (fill_l1)
+          ++stats.prefetch_issued_l1;
+        else
+          ++stats.prefetch_issued_l2;
+      }
     }
   }
 }
@@ -652,4 +695,6 @@ void berti::prefetcher_final_stats()
   fmt::print("  DELTA_CLASSIFICATIONS:         {}\n", stats.delta_classifications);
   fmt::print("  WARMUP_PREFETCH_CANDIDATES:    {}\n", stats.warmup_prefetch_candidates);
   fmt::print("  HISTORY_SKIPPED_MIGRATION:     {}\n", stats.history_skipped_migration);
+  fmt::print("  CXL_PREFETCHES_ISSUED:         {}\n", stats.cxl_prefetches_issued);
+  fmt::print("  CXL_PREFETCHES_SUPPRESSED:     {}\n", stats.cxl_prefetches_suppressed);
 }
