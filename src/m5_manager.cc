@@ -233,6 +233,76 @@ void M5Manager::maybe_trigger_epoch(uint64_t num_retired)
   ++epoch_count_;
   ++stats_.total_epochs_fired;
 
+  // ── 0. Co-aware epoch bookkeeping ─────────────────────────────────────────
+  // Must run before the M5 pipeline so the Nominator and Elector see fresh
+  // co-aware signals, and before ip_page_access_count is cleared.
+
+  // Expose current epoch number to Berti (used for migration signal expiry).
+  coaware::current_epoch = epoch_count_;
+
+  // Compute co-aware signals from this epoch's access data.
+  compute_uncovered_access_rates(dram_);
+  update_page_prefetchability(dram_);
+
+  // Fix M4: capture max hotness BEFORE decay so normalisation is consistent
+  // within this epoch.  Initialise to 1.0 to prevent divide-by-zero when all
+  // pages have zero hotness (e.g. first epoch).
+  coaware::epoch_max_hotness = 1.0f;
+  for (const auto& [pn, h] : coaware::page_hotness)
+    if (h > coaware::epoch_max_hotness) coaware::epoch_max_hotness = h;
+
+  // Fix M3 — DECAY: page_hotness carries weighted history across epochs.
+  for (auto& [pn, h] : coaware::page_hotness)
+    h *= coaware::HOTNESS_DECAY_FACTOR;
+
+  // Fix M3 — FULL CLEAR: ip_page_access_count is per-epoch only.
+  // ip_max_coverage is NOT cleared — it persists until Berti rewrites it.
+  for (auto& [ip, pm] : coaware::ip_page_access_count)
+    pm.clear();
+
+  // CXL prefetch budget: track consecutive exhausted epochs (Trigger 2),
+  // then reset for the new epoch.
+  if (coaware::cxl_prefetch_budget_remaining <= 0)
+    ++coaware::cxl_prefetch_budget_exhausted_epochs;
+  else
+    coaware::cxl_prefetch_budget_exhausted_epochs = 0;
+  coaware::cxl_prefetch_budget_remaining = coaware::CXL_PREFETCH_BUDGET_PER_EPOCH;
+
+  // Fix C3: per-page consecutive epoch counter for high uncovered-access-rate.
+  // Increment for pages above the threshold; reset for pages that dropped below.
+  for (const auto& [page_num, rate] : coaware::page_uncovered_rate) {
+    if (rate > coaware::UNCOVERED_RATE_MIGRATION_THRESHOLD)
+      ++coaware::high_uncovered_rate_epochs[page_num];
+    else
+      coaware::high_uncovered_rate_epochs[page_num] = 0;
+  }
+
+  // Fix C3: also reset counter for any page no longer in page_uncovered_rate
+  // (it was promoted to DDR this epoch or dropped out of tracking).
+  for (auto& [page_num, cnt] : coaware::high_uncovered_rate_epochs) {
+    if (!coaware::page_uncovered_rate.count(page_num))
+      cnt = 0;
+  }
+
+  // Expire migration signals older than one epoch so the maps don't grow
+  // indefinitely.  Berti treats signals with age > 1 as already expired, but
+  // we clean up here to bound memory use.
+  for (auto it = coaware::recently_migrated_pages.begin();
+       it != coaware::recently_migrated_pages.end(); ) {
+    it = (epoch_count_ - it->second > 1)
+         ? coaware::recently_migrated_pages.erase(it)
+         : std::next(it);
+  }
+  for (auto it = coaware::recently_demoted_pages.begin();
+       it != coaware::recently_demoted_pages.end(); ) {
+    it = (epoch_count_ - it->second > 1)
+         ? coaware::recently_demoted_pages.erase(it)
+         : std::next(it);
+  }
+
+  // Fix S8: reset per-page CXL prefetch issue count for the new epoch.
+  coaware::cxl_pf_issued_per_page.clear();
+
   // ── 1. Monitor ────────────────────────────────────────────────────────────
   uint64_t ddr_bytes = 0, cxl_bytes = 0;
   const std::size_t n_primary = dram_.num_primary_channels();
