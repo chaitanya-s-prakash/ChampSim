@@ -53,7 +53,16 @@ MEMORY_CONTROLLER::MEMORY_CONTROLLER(std::vector<channel_type*>&& ul, memory_spe
       primary_size_bytes(memory_size(make_address_mapping(primary))),
       secondary_size_bytes(secondary.has_value() ? memory_size(make_address_mapping(*secondary)) : champsim::data::bytes{}), address_mapping(make_address_mapping(primary)),
       secondary_address_mapping(secondary.has_value() ? std::optional<DRAM_ADDRESS_MAPPING>{make_address_mapping(*secondary)} : std::nullopt),
-      data_bus_period(primary.dbus_period)
+      data_bus_period(primary.dbus_period),
+      // Placement table: initialized from the computed tier capacities.
+      // primary_size_bytes and secondary_size_bytes are already initialized above
+      // (members are constructed in declaration order).
+      placement_table(
+          static_cast<uint64_t>(primary_size_bytes.count()) / PAGE_SIZE,
+          static_cast<uint64_t>(secondary_size_bytes.count()) / PAGE_SIZE,
+          static_cast<uint64_t>(primary_size_bytes.count())),
+      hpt(m5::config{}.hpt_cms_width, m5::config{}.hpt_cms_depth, m5::config{}.hpt_top_k),
+      hwt(m5::config{}.hwt_cms_width, m5::config{}.hwt_cms_depth, m5::config{}.hwt_top_k)
 {
   channels.reserve(primary.channels + (secondary.has_value() ? secondary->channels : 0));
 
@@ -618,11 +627,36 @@ std::size_t MEMORY_CONTROLLER::channel_index(champsim::address address) const
 
 bool MEMORY_CONTROLLER::add_rq(const request_type& packet, champsim::channel* ul)
 {
-  auto& channel = channels[channel_index(packet.address)];
+  // Translate the CPU-visible address to the routed DRAM slot (may differ after migration).
+  auto routed_addr = placement_table.get_routed_address(packet.address);
+  auto  chan_idx   = channel_index(routed_addr);
+  auto& channel    = channels[chan_idx];
+
+  // HPT/HWT + MGLRU: update trackers based on which tier this request goes to.
+  // Use the logical (CPU-visible) address so keys are stable across migrations.
+  const bool is_cxl_bound  = (chan_idx >= primary_channel_count);
+  const bool is_demand_read = (packet.type != access_type::PREFETCH &&
+                               packet.type != access_type::WRITE);
+  const uint64_t logical_raw   = packet.address.to<uint64_t>();
+  const uint64_t logical_ppage = logical_raw >> LOG2_PAGE_SIZE;
+
+  if (is_demand_read) {
+    if (is_cxl_bound) {
+      // CXL access — update HPT and HWT for hot-page/hot-line tracking.
+      const uint64_t lines_per_page = PAGE_SIZE / BLOCK_SIZE;
+      const uint64_t line_in_page   = (logical_raw >> LOG2_BLOCK_SIZE) & (lines_per_page - 1);
+      hpt.update(logical_ppage);
+      hwt.update(logical_ppage * lines_per_page + line_in_page);
+    } else {
+      // DDR access — reset MGLRU generation to mark the page as recently used.
+      placement_table.touch(logical_ppage);
+    }
+  }
 
   if (auto rq_it = std::find_if_not(std::begin(channel.RQ), std::end(channel.RQ), [this](const auto& pkt) { return pkt.has_value(); });
       rq_it != std::end(channel.RQ)) {
     *rq_it = DRAM_CHANNEL::request_type{packet};
+    rq_it->value().address = routed_addr;  // DRAM channel uses routed addr for bank/row mapping
     rq_it->value().forward_checked = false;
     rq_it->value().scheduled = false;
     rq_it->value().ready_time = channel.current_time;
@@ -641,12 +675,15 @@ bool MEMORY_CONTROLLER::add_rq(const request_type& packet, champsim::channel* ul
 
 bool MEMORY_CONTROLLER::add_wq(const request_type& packet)
 {
-  auto& channel = channels[channel_index(packet.address)];
+  // Translate the CPU-visible address to the routed DRAM slot (may differ after migration).
+  auto routed_addr = placement_table.get_routed_address(packet.address);
+  auto& channel = channels[channel_index(routed_addr)];
 
   // search for the empty index
   if (auto wq_it = std::find_if_not(std::begin(channel.WQ), std::end(channel.WQ), [](const auto& pkt) { return pkt.has_value(); });
       wq_it != std::end(channel.WQ)) {
     *wq_it = DRAM_CHANNEL::request_type{packet};
+    wq_it->value().address = routed_addr;  // DRAM channel uses routed addr for bank/row mapping
     wq_it->value().forward_checked = false;
     wq_it->value().scheduled = false;
     wq_it->value().ready_time = channel.current_time;

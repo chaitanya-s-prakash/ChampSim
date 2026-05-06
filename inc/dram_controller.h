@@ -34,6 +34,10 @@
 #include "dram_stats.h"
 #include "extent_set.h"
 #include "operable.h"
+#include "cms_tracker.h"
+#include "m5_monitor.h"
+#include "m5_policy.h"
+#include "page_placement.h"
 
 struct DRAM_ADDRESS_MAPPING {
   constexpr static std::size_t SLICER_OFFSET_IDX = 0;
@@ -250,6 +254,20 @@ private:
 public:
   std::vector<DRAM_CHANNEL> channels;
 
+  // Explicit page placement table for M5 migration.
+  // Public so the M5 policy can call placement_table.migrate().
+  PagePlacementTable placement_table;
+
+  // Per-epoch bandwidth and density tracker for the M5 Monitor.
+  // M5Manager calls monitor.reset_epoch() at each migration epoch boundary.
+  m5::M5Monitor monitor;
+
+  // CXL-side hot page tracker (HPT) and hot word/cache-line tracker (HWT).
+  // Updated only for demand reads routed to CXL channels.
+  // M5Manager resets these at each epoch and queries top_entries() for candidates.
+  CmsTracker hpt;  // key = logical page number
+  CmsTracker hwt;  // key = page_num * lines_per_page + line_offset_in_page
+
   MEMORY_CONTROLLER(std::vector<channel_type*>&& ul, memory_spec primary, std::optional<memory_spec> secondary = {});
   MEMORY_CONTROLLER(champsim::chrono::picoseconds dbus_period, champsim::chrono::picoseconds mc_period, std::size_t t_rp, std::size_t t_rcd, std::size_t t_cas,
                     std::size_t t_ras, champsim::chrono::microseconds refresh_period, std::vector<channel_type*>&& ul, std::size_t rq_size, std::size_t wq_size,
@@ -265,8 +283,17 @@ public:
   [[nodiscard]] champsim::data::bytes size() const;
   [[nodiscard]] champsim::data::bytes primary_size() const;
   [[nodiscard]] champsim::data::bytes secondary_size() const;
-  [[nodiscard]] bool is_tiered() const;
+  [[nodiscard]] bool        is_tiered() const;
+  // Number of DDR channels; channels[0..n-1] are DDR, [n..end) are CXL.
+  [[nodiscard]] std::size_t num_primary_channels() const { return primary_channel_count; }
+
+  // Raw address-range check (used by VirtualMemory for initial allocation stats).
   [[nodiscard]] bool is_cxl_address(champsim::address address) const { return is_secondary_address(address); }
+
+  // Placement-table-aware tier check (used by HPT/HWT gating after migration).
+  [[nodiscard]] bool is_cxl_access(champsim::address address) {
+    return placement_table.get_tier(address) == PagePlacementTable::Tier::CXL;
+  }
 };
 
 #endif
