@@ -152,6 +152,20 @@ std::vector<uint64_t> M5Manager::nominate_candidates()
     candidates.push_back(ppage);
   }
 
+  // Co-aware: re-rank HPT candidates by uncovered_access_rate (descending).
+  // Original HPT ordering is by raw access count — that promotes the hottest
+  // pages regardless of prefetchability.  Sorting by uncovered_access_rate
+  // promotes the hottest *unprefetchable* pages first, which is the correct
+  // priority: pages Berti cannot cover are the ones that actually cause stalls.
+  // Pages not in page_uncovered_rate (no co-aware data yet) sort to the back.
+  std::sort(candidates.begin(), candidates.end(), [](uint64_t a, uint64_t b) {
+    const float ra = coaware::page_uncovered_rate.count(a)
+                     ? coaware::page_uncovered_rate.at(a) : 0.0f;
+    const float rb = coaware::page_uncovered_rate.count(b)
+                     ? coaware::page_uncovered_rate.at(b) : 0.0f;
+    return ra > rb;
+  });
+
   return candidates;
 }
 
@@ -233,7 +247,7 @@ void M5Manager::maybe_trigger_epoch(uint64_t num_retired)
   ++epoch_count_;
   ++stats_.total_epochs_fired;
 
-  // ── 0. Co-aware epoch bookkeeping ─────────────────────────────────────────
+  // ── Co-aware epoch bookkeeping ─────────────────────────────────────────
   // Must run before the M5 pipeline so the Nominator and Elector see fresh
   // co-aware signals, and before ip_page_access_count is cleared.
 
@@ -244,18 +258,18 @@ void M5Manager::maybe_trigger_epoch(uint64_t num_retired)
   compute_uncovered_access_rates(dram_);
   update_page_prefetchability(dram_);
 
-  // Fix M4: capture max hotness BEFORE decay so normalisation is consistent
+  // Fix : capture max hotness BEFORE decay so normalisation is consistent
   // within this epoch.  Initialise to 1.0 to prevent divide-by-zero when all
   // pages have zero hotness (e.g. first epoch).
   coaware::epoch_max_hotness = 1.0f;
   for (const auto& [pn, h] : coaware::page_hotness)
     if (h > coaware::epoch_max_hotness) coaware::epoch_max_hotness = h;
 
-  // Fix M3 — DECAY: page_hotness carries weighted history across epochs.
+  // Fix — DECAY: page_hotness carries weighted history across epochs.
   for (auto& [pn, h] : coaware::page_hotness)
     h *= coaware::HOTNESS_DECAY_FACTOR;
 
-  // Fix M3 — FULL CLEAR: ip_page_access_count is per-epoch only.
+  // Fix — FULL CLEAR: ip_page_access_count is per-epoch only.
   // ip_max_coverage is NOT cleared — it persists until Berti rewrites it.
   for (auto& [ip, pm] : coaware::ip_page_access_count)
     pm.clear();
@@ -268,7 +282,7 @@ void M5Manager::maybe_trigger_epoch(uint64_t num_retired)
     coaware::cxl_prefetch_budget_exhausted_epochs = 0;
   coaware::cxl_prefetch_budget_remaining = coaware::CXL_PREFETCH_BUDGET_PER_EPOCH;
 
-  // Fix C3: per-page consecutive epoch counter for high uncovered-access-rate.
+  // Fix: per-page consecutive epoch counter for high uncovered-access-rate.
   // Increment for pages above the threshold; reset for pages that dropped below.
   for (const auto& [page_num, rate] : coaware::page_uncovered_rate) {
     if (rate > coaware::UNCOVERED_RATE_MIGRATION_THRESHOLD)
@@ -277,7 +291,7 @@ void M5Manager::maybe_trigger_epoch(uint64_t num_retired)
       coaware::high_uncovered_rate_epochs[page_num] = 0;
   }
 
-  // Fix C3: also reset counter for any page no longer in page_uncovered_rate
+  // Fix: also reset counter for any page no longer in page_uncovered_rate
   // (it was promoted to DDR this epoch or dropped out of tracking).
   for (auto& [page_num, cnt] : coaware::high_uncovered_rate_epochs) {
     if (!coaware::page_uncovered_rate.count(page_num))
@@ -300,7 +314,7 @@ void M5Manager::maybe_trigger_epoch(uint64_t num_retired)
          : std::next(it);
   }
 
-  // Fix S8: reset per-page CXL prefetch issue count for the new epoch.
+  // Fix: reset per-page CXL prefetch issue count for the new epoch.
   coaware::cxl_pf_issued_per_page.clear();
 
   // ── 1. Monitor ────────────────────────────────────────────────────────────
