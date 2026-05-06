@@ -66,7 +66,7 @@
     "max_tag_check": 2,
     "max_fill": 2,
     "prefetch_as_load": false,
-    "virtual_prefetch": true,
+    "virtual_prefetch": false,
     "prefetch_activate": "LOAD,PREFETCH",
     "prefetcher": "berti"
   },
